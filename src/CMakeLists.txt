@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-set(executable_name vulk_tut)
+set(executable_name prototype)
 file(GLOB SRC_FILES *.cpp)
 
 add_executable(${executable_name})
