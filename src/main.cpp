@@ -6,6 +6,8 @@
 #include <functional>
 #include <cstring>
 
+/************************************************GLOBALS************************************************/
+
 #define APP_NAME "Vulkan Prototype"
 
 #ifdef NDEBUG   //make sure to use the correct CMAKE_BUILD_TYPE!
@@ -16,6 +18,8 @@
 
 std::ostream& ENG_LOG     = std::cout;
 std::ostream& ENG_ERR_LOG = std::cerr;
+
+/************************************************STRUCTS************************************************/
 
 struct window_info
 {
@@ -33,36 +37,15 @@ struct window_info
     size_t width, height;
     const char* title;
 };
-//only call GLFW functions here
-class GLFW_window_interface
+struct vulkan_communicaion_instance_init_info
 {
-public:
-    void init(window_info window_parameters = window_info())
-    {
-        glfwInit();
-        //we assume this is a vulkan application
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
-        WINDOW_PTR = glfwCreateWindow(window_parameters.width, window_parameters.height, window_parameters.title, nullptr, nullptr);
-    };
-    void terminate()
-    {
-        glfwDestroyWindow(WINDOW_PTR);
-        glfwTerminate();
-    }
-    static std::vector<const char*> get_glfw_required_extensions()
-    {
-        uint32_t count;
-        const char** data = glfwGetRequiredInstanceExtensions(&count);
-        //Apparently pointers can function like iterators
-        //vector(c_array, c_array + size), nice!
-        std::vector<const char*> extensions(data, data + count);
-        return extensions;
-    }
-private:
-    GLFWwindow* WINDOW_PTR;
+    window_info window_parameters;
+    const char* app_name;
 };
+
+
+/************************************************HELPER FUNCTIONS************************************************/
+
 
 //Attempts to create vulkan instance in instance_ref.
 //Also checks for extension and layer support, throwing a std::runtime_error in case of failure.
@@ -145,25 +128,42 @@ const char** layer_names, const VkApplicationInfo app_info)
     return vkCreateInstance(&instance_create_info, nullptr, &instance_ref);
 }
 
+VkApplicationInfo get_app_info(const char* app_name)
+{
+    VkApplicationInfo app_info{};
+    app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app_info.apiVersion = VK_API_VERSION_1_0;
+    app_info.engineVersion = VK_MAKE_VERSION(1.0, 0.0, 0.0);
+    app_info.applicationVersion = VK_MAKE_VERSION(1.0, 0.0, 0.0);
+    app_info.pApplicationName = app_name;
+    return app_info;
+}
+
+/************************************************MODULES************************************************/
+
+
 //only call the vulkan API here
 class vulkan_communication_instance
 {
 public:
 
     //run this once at the start
-    void init()
+    void init(vulkan_communicaion_instance_init_info init_info)
     {
+        GLFW_INTERFACE.init(init_info.window_parameters);
+
         const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
         std::vector<const char*> required_extension_names;
         std::vector<const char*>     required_layer_names;
 
         required_extension_names = GLFW_window_interface::get_glfw_required_extensions();
+//HACK hardcoding 
         if(ENABLE_VALIDATION_LAYERS)
             required_layer_names.push_back("VK_LAYER_KHRONOS_validation");
 
         init_vk_instance(INSTANCE, static_cast<uint32_t>(required_extension_names.size()),
         required_extension_names.data(),static_cast<uint32_t>(required_layer_names.size()),
-        required_layer_names.data(), get_app_info());
+        required_layer_names.data(), get_app_info(init_info.app_name));
     }
     //run this inside the render loop
     void invoke()
@@ -175,34 +175,53 @@ public:
     void terminate()
     {
         vkDestroyInstance(INSTANCE, nullptr);
+        GLFW_INTERFACE.terminate();
     }
 private:
-    VkInstance  INSTANCE;
-    
-    VkApplicationInfo get_app_info()
+    //only call GLFW functions here
+    class GLFW_window_interface
     {
-        VkApplicationInfo app_info{};
-        app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        app_info.apiVersion = VK_API_VERSION_1_0;
-        app_info.engineVersion = VK_MAKE_VERSION(1.0, 0.0, 0.0);
-        app_info.applicationVersion = VK_MAKE_VERSION(1.0, 0.0, 0.0);
-        app_info.pApplicationName = APP_NAME;
-        return app_info;
-    }
+    public:
+        void init(window_info window_parameters = window_info())
+        {
+            glfwInit();
+            //we assume this is a vulkan application
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+            glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+
+            WINDOW_PTR = glfwCreateWindow(window_parameters.width, window_parameters.height, window_parameters.title, nullptr, nullptr);
+        };
+        void terminate()
+        {
+            glfwDestroyWindow(WINDOW_PTR);
+            glfwTerminate();
+        }
+        static std::vector<const char*> get_glfw_required_extensions()
+        {
+            uint32_t count;
+            const char** data = glfwGetRequiredInstanceExtensions(&count);
+            //Apparently pointers can function like iterators: vector(c_array, c_array + size). nice!
+            std::vector<const char*> extensions(data, data + count);
+            return extensions;
+        }
+    private:
+        GLFWwindow* WINDOW_PTR;
+    };
+    GLFW_window_interface GLFW_INTERFACE;
+
+    VkInstance  INSTANCE;
 };
 
 
 int main()
 {
     vulkan_communication_instance instance;
-
-    GLFW_window_interface window_interface;
-    window_interface.init({800, 600, "Vulkan Prototype"});
+    vulkan_communicaion_instance_init_info init_info{{800, 600, "Vulkan Prototype"}, "Vulkan Prototype"};
 
     try
     {
-        instance.init();
-    }
+        instance.init(init_info);
+    } 
     catch(const std::exception& e)
     {
         ENG_ERR_LOG << e.what() << std::endl;
