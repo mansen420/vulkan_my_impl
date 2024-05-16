@@ -153,11 +153,15 @@ public:
     //run this once at the start
     void init()
     {
+        const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
+        std::vector<const char*> required_extension_names;
+        std::vector<const char*>     required_layer_names;
+
         required_extension_names = GLFW_window_interface::get_glfw_required_extensions();
         if(ENABLE_VALIDATION_LAYERS)
             required_layer_names.push_back("VK_LAYER_KHRONOS_validation");
 
-        init_vk_instance(instance, static_cast<uint32_t>(required_extension_names.size()),
+        init_vk_instance(INSTANCE, static_cast<uint32_t>(required_extension_names.size()),
         required_extension_names.data(),static_cast<uint32_t>(required_layer_names.size()),
         required_layer_names.data(), get_app_info());
     }
@@ -170,13 +174,10 @@ public:
     //note that a vulkan_communication_layer object can not be restarted after termination
     void terminate()
     {
-        
+        vkDestroyInstance(INSTANCE, nullptr);
     }
 private:
-    VkInstance  instance;
-    const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
-    std::vector<const char*> required_extension_names;
-    std::vector<const char*>     required_layer_names;
+    VkInstance  INSTANCE;
     
     VkApplicationInfo get_app_info()
     {
