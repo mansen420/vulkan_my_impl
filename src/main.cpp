@@ -7,6 +7,7 @@
 #include <cstring>
 #include <optional>
 #include <thread>
+#include <type_traits>
 
 /************************************************GLOBALS************************************************/
 
@@ -39,7 +40,7 @@ struct window_info
     size_t width, height;
     const char* title;
 };
-struct vulkan_communicaion_instance_init_info
+struct vulkan_communication_instance_init_info
 {
     window_info window_parameters;
     const char* app_name;
@@ -171,54 +172,89 @@ bool is_adequate(VkPhysicalDevice phys_device)
 
     return indices.graphics_queue_index.has_value();
 }
+
+void destroy_debug_messenger(VkInstance instance, VkDebugUtilsMessengerEXT debug_messenger)
+{
+    if(!DEBUG_MODE)
+        return;
+    auto fun = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
+    instance, "vkDestroyDebugUtilsMessengerEXT");
+    if(fun != nullptr)
+        fun(instance, debug_messenger, nullptr);
+    else
+        throw std::runtime_error("Failed to find function pointer \"vkDestroyDebugUtilsMessengerEXT.\"");
+}
 /************************************************MODULES************************************************/
+
 class destroyable
 {
 public:
     virtual void destroy() = 0;
 };
-//parent kills children before it kills itself : generic data structure
-class instance : public destroyable
+
+//parent kills children before it kills itself : generic data structure PITA
+
+template <class handle_t> class vk_object : public destroyable
 {
 public:
-    VkInstance handle;
+    virtual void destroy() {};
+    handle_t handle = VK_NULL_HANDLE;
+};
+
+class parent
+{
+protected:
     std::vector<destroyable*> children;
-    void destroy() override final
+public:
+    void add_child(destroyable* child)
+    {
+        children.push_back(child);
+    }
+};
+template <class parent_t, std::enable_if_t<std::is_base_of<parent, parent_t>::value && !std::is_same<parent_t, parent>::value, int> = 0 >
+class child : public destroyable
+{
+public:
+    virtual void destroy() = 0;
+    child(parent_t* parent_ptr) 
+    {
+        this->parent_ptr = parent_ptr;
+        parent* p = (parent*)parent_ptr;
+        p->add_child(this);
+    }
+    parent_t* parent_ptr;
+};
+
+class vk_instance        : public vk_object<VkInstance>              , public parent
+{
+public:
+    virtual void destroy() override final
     {
         for(auto& child : children)
             child->destroy();
-        vkDestroyInstance(handle, nullptr);
+        vkDestroyInstance(this->handle, nullptr);
     }
 };
-class debug_messenger : public destroyable
+class vk_debug_messenger : public vk_object<VkDebugUtilsMessengerEXT>, public child<vk_instance>
 {
 public:
-    debug_messenger(instance* parent){this->parent = parent; parent->children.push_back(this);}
-    instance* parent;
-    VkDebugUtilsMessengerEXT handle;
+    vk_instance* parent;
+    vk_debug_messenger(vk_instance* parent) : child<vk_instance>(parent) {}
     void destroy() override final
     {
-        destroy_debug_messenger(parent->handle);
+        destroy_debug_messenger(parent->handle, this->handle);
     }
-    void destroy_debug_messenger(VkInstance instance_handle)
-    {
-        if(!DEBUG_MODE)
-            return;
-        auto fun = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
-        instance_handle, "vkDestroyDebugUtilsMessengerEXT");
-        if(fun != nullptr)
-            fun(instance_handle, handle, nullptr);
-        else
-            throw std::runtime_error("Failed to find function pointer \"vkDestroyDebugUtilsMessengerEXT.\"");
-    }
+};
+class vk_phys_device     : public vk_object<VkPhysicalDevice>        , public child<vk_instance>
+{
+    vk_phys_device(vk_instance* parent) : child<vk_instance>(parent) {}
 };
 //only call the vulkan API here
 class vulkan_communication_instance
 {
 public:
-
     //run this once at the start
-    void init(vulkan_communicaion_instance_init_info init_info)
+    void init(vulkan_communication_instance_init_info init_info)
     {
         GLFW_INTERFACE.init(init_info.window_parameters);
 
@@ -236,12 +272,12 @@ public:
     //note that a vulkan_communication_layer object can not be restarted after termination
     void terminate()
     {
-        destroy_debug_messenger();
-        vkDestroyInstance(INSTANCE, nullptr);
+        for(auto& object : DESTROY_QUEUE)
+            object.destroy();
+
         GLFW_INTERFACE.terminate();
     }
 private:
-//placeholder
     vk_extension_info get_extension_info()
     {
         const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
@@ -305,13 +341,15 @@ private:
     }
     void init_validation_layer()
     {
+        static VkDebugUtilsMessengerEXT debug_messenger;
+
         auto create_info = get_debug_create_info();
 
         auto fun = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
         INSTANCE, "vkCreateDebugUtilsMessengerEXT");
         if(fun == nullptr)
             throw std::runtime_error("Failed to get function pointer : \"vkCreateDebugUtilsMessengerEXT.\"");
-        if(fun(INSTANCE, &create_info, nullptr, &DEBUG_MESSENGER) != VK_SUCCESS)
+        if(fun(INSTANCE, &create_info, nullptr, &debug_messenger) != VK_SUCCESS)
             throw std::runtime_error("Failed to create debug util messenger object.");
     }
     static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback_fun(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, 
@@ -333,17 +371,7 @@ private:
         << std::endl;
         return VK_FALSE;
     }
-    void destroy_debug_messenger()
-    {
-        if(!DEBUG_MODE)
-            return;
-        auto fun = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
-        INSTANCE, "vkDestroyDebugUtilsMessengerEXT");
-        if(fun != nullptr)
-            fun(INSTANCE, DEBUG_MESSENGER, nullptr);
-        else
-            throw std::runtime_error("Failed to find function pointer \"vkDestroyDebugUtilsMessengerEXT.\"");
-    }
+    
     //only call GLFW functions here
     class GLFW_window_interface
     {
@@ -375,17 +403,17 @@ private:
     };
     GLFW_window_interface GLFW_INTERFACE;
 
-
     VkInstance                      INSTANCE;
     VkPhysicalDevice             PHYS_DEVICE;
-    VkDebugUtilsMessengerEXT DEBUG_MESSENGER;
+
+    std::vector<destroyable>   DESTROY_QUEUE;
 };
 
 
 int main()
 {
     vulkan_communication_instance instance;
-    vulkan_communicaion_instance_init_info init_info{{800, 600, "Vulkan Prototype"}, "Vulkan Prototype"};
+    vulkan_communication_instance_init_info init_info{{800, 600, "Vulkan Prototype"}, "Vulkan Prototype"};
 
     try
     {
