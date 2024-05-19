@@ -6,8 +6,9 @@
 #include <functional>
 #include <cstring>
 #include <optional>
-#include <thread>
 #include <type_traits>
+#include <set>
+#include <algorithm>
 
 /************************************************GLOBALS************************************************/
 
@@ -18,6 +19,8 @@
 #else
     const bool DEBUG_MODE = true;
 #endif
+
+constexpr uint32_t VK_UINT32_MAX = 0xFFFFFFFF;
 
 std::ostream& ENG_LOG     = std::cout;
 std::ostream& ENG_ERR_LOG = std::cerr;
@@ -74,15 +77,36 @@ struct swapchain_support
     std::vector<VkSurfaceFormatKHR>     surface_formats;
     std::vector<VkPresentModeKHR> surface_present_modes;
 };
-struct queue_indices
+//Stores indices of queue families that support support various operations
+struct queue_family_indices
 {
-    std::optional<uint32_t> graphics_queue_index, present_queue_index;
+    std::optional<uint32_t> graphics_fam_index, present_fam_index;
+};
+enum queue_support_flag_bits
+{
+    GRAPHICS_BIT = 0b0001,
+    PRESENT_BIT  = 0b0010
+};
+//Stores family index, count, and uses of a logical device queue
+struct device_queue
+{
+    uint32_t family_index;
+    uint32_t count;
+    uint32_t flags;
 };
 struct vk_extension_info
 {
     std::vector<const char*> extensions;
     std::vector<const char*> layers;
 };
+struct swapchain_features
+{
+    VkSurfaceFormatKHR             surface_format;
+    VkPresentModeKHR                 present_mode;
+    VkExtent2D                             extent;
+    VkSurfaceCapabilitiesKHR surface_capabilities;
+};
+
 std::vector<const char*> get_required_extension_names(VkPhysicalDevice device)
 {
     std::vector<const char*> required_extension_names;
@@ -121,7 +145,24 @@ std::vector<VkPhysicalDevice> get_physical_devices(VkInstance instance)
     vkEnumeratePhysicalDevices(instance,&phys_devices_count, phys_devices.data());
     return phys_devices;
 }
+std::vector<device_queue> get_device_queues(queue_family_indices fam_indices)
+{
+    std::set<uint32_t> indices = {fam_indices.graphics_fam_index.value(), fam_indices.present_fam_index.value()};
 
+    std::vector<device_queue> device_queues;
+
+    for(const auto& index: indices)
+    {
+        device_queue queue;
+        queue.count = 1, queue.family_index = index;
+        if(index == fam_indices.graphics_fam_index)
+            queue.flags |= GRAPHICS_BIT;
+        if(index == fam_indices.present_fam_index)
+            queue.flags |= PRESENT_BIT;
+        device_queues.push_back(queue);
+    }
+    return device_queues;
+}
 
 bool check_support(const size_t available_name_count, const char** available_names, const char** required_names, const size_t required_name_count)
 {
@@ -255,25 +296,38 @@ swapchain_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceK
     return support;
 }
 
-bool is_complete(queue_indices indices)
+std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice device)
 {
-    return indices.graphics_queue_index.has_value() && indices.present_queue_index.has_value();
+    //retrieve image handles. Remember : image count specified in swapchain creation is only a minimum!
+    uint32_t swapchain_image_count;
+    vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count,
+    nullptr);
+    std::vector<VkImage> swapchain_images(swapchain_image_count);
+    vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count,
+    swapchain_images.data());
+
+    return swapchain_images;
+}
+
+bool is_complete(queue_family_indices indices)
+{
+    return indices.graphics_fam_index.has_value() && indices.present_fam_index.has_value();
 }
 //Attempts to find a complete queue family in phys_device.
 //Be warned that this function may return indices that do not pass is_complete().
-queue_indices find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
+queue_family_indices find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 {
     const auto queue_families = get_queue_properties(phys_device);
-    queue_indices indices;
+    queue_family_indices indices;
     for(size_t i = 0; i < queue_families.size(); i++)
     {
         uint32_t i32 = static_cast<uint32_t>(i);
         if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-            indices.graphics_queue_index = i32;
+            indices.graphics_fam_index = i32;
         VkBool32 supports_surface = false;
         vkGetPhysicalDeviceSurfaceSupportKHR(phys_device, i32, surface, &supports_surface);
         if(supports_surface)
-            indices.present_queue_index = i32;
+            indices.present_fam_index = i32;
         if(is_complete(indices))
             break;
     }
@@ -281,7 +335,7 @@ queue_indices find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKHR surfa
 }
 bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 {
-    queue_indices indices = find_queue_family(phys_device, surface);
+    queue_family_indices indices = find_queue_family(phys_device, surface);
 
     auto avl_names = get_extension_names(phys_device);
     
@@ -380,8 +434,27 @@ public:
     vk_surface(vk_instance* parent) : child<vk_instance>(parent) {}
     virtual void free_obj(){vkDestroySurfaceKHR(parent_ptr->handle, this->handle, nullptr);}
 };
+class vk_device          : public vk_object<VkDevice>                , public parent
+{
+public:
+    std::vector<device_queue> device_queues;
+    virtual void free_obj() override final
+    {
+        destroy_children();
+        vkDestroyDevice(handle, nullptr);
+    }
+};
+class vk_swapchain       : public vk_object<VkSwapchainKHR>          , public child<vk_device>
+{
+public:
+    swapchain_features features;
+    vk_swapchain(vk_device* parent) : child<vk_device>(parent) {}
+    virtual void free_obj() override final
+    {
+        vkDestroySwapchainKHR(parent_ptr->handle, handle, nullptr);
+    }
+};
 typedef vk_object<VkPhysicalDevice> vk_phys_device;
-
 
 //only call the vulkan API here
 class vulkan_communication_instance
@@ -396,15 +469,29 @@ public:
         init_instance(instance.handle ,init_info.app_name);
 
         if(DEBUG_MODE)
-            init_validation_layer(&instance);
+        {
+            static vk_debug_messenger debug_messenger(&instance);
+            init_validation_layer(instance.handle, debug_messenger.handle);
+        }
 
-        static vk_surface surface_obj(&instance);
-        init_surface(instance.handle, surface_obj.handle);
+        static vk_surface surface(&instance);
+        init_surface(instance.handle, surface.handle, GLFW_INTERFACE);
 
         static vk_phys_device phys_device;
-        init_phys_device(phys_device.handle, instance.handle, surface_obj.handle);
+        init_phys_device(phys_device.handle, instance.handle, surface.handle);
 
         DESTROY_QUEUE.push_back(&instance);
+
+        static vk_device device;
+        device.device_queues = get_device_queues(find_queue_family(phys_device.handle, surface.handle));
+        init_device(phys_device.handle, device.device_queues, device.handle);
+
+        static vk_swapchain swapchain(&device);
+        swapchain_support swp_support = get_swapchain_support(phys_device.handle, surface.handle);
+        swapchain.features = get_swapchain_features(swp_support, GLFW_INTERFACE);
+        init_swapchain(device.handle, device.device_queues, surface.handle, swapchain.handle, swapchain.features);
+
+        DESTROY_QUEUE.push_back(&device);
     }
     //run this inside the render loop
     void invoke()
@@ -422,83 +509,7 @@ public:
         GLFW_INTERFACE.terminate();
     }
 private:
-    static vk_extension_info get_required_extension_names(VkInstance instance)
-    {
-        const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
-
-        std::vector<const char*> required_extension_names;
-        std::vector<const char*>     required_layer_names;
-
-        required_extension_names = GLFW_window_interface::get_glfw_required_extensions();
-//HACK hardcoding 
-        if(ENABLE_VALIDATION_LAYERS)
-        {
-            required_layer_names.push_back("VK_LAYER_KHRONOS_validation");
-            required_extension_names.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-        }
-
-        vk_extension_info info{};
-        info.extensions = required_extension_names;
-        info.layers     =     required_layer_names;
-
-        return info;
-    }
-
-    void init_instance(VkInstance& instance ,const char* app_name)
-    {
-        auto create_info = get_debug_create_info();
-        void* ext_ptr = &create_info;
-
-        if(!DEBUG_MODE)
-            ext_ptr = nullptr;
-
-        init_vk_instance(instance, get_required_extension_names(instance), get_app_info(app_name), ext_ptr);
-    }
-    void init_phys_device(VkPhysicalDevice& phys_device, VkInstance instance, VkSurfaceKHR surface)
-    {
-        const auto phys_devices = get_physical_devices(instance);
-
-        std::vector<VkPhysicalDevice> candidates;
-        
-        size_t i = 1;
-        for(const auto& device : phys_devices)
-        {
-            ENG_LOG << "Physical device "<< i++ <<" check : \n";
-            if(is_adequate(device, surface))
-                candidates.push_back(device);
-        }
-        if(candidates.empty())
-            throw std::runtime_error("Failed to find adequate physical device.");
-//TODO pick the best-performing adequate physical device
-        phys_device = candidates[0];
-    }
-    
-    void init_validation_layer(vk_instance* instance_obj_ptr)
-    {
-        if(instance_obj_ptr == nullptr)
-            throw std::runtime_error("nullptr received");
-
-        static vk_debug_messenger debug_messenger(instance_obj_ptr);
-
-        auto create_info = get_debug_create_info();
-
-        auto fun = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
-        instance_obj_ptr->handle, "vkCreateDebugUtilsMessengerEXT");
-        if(fun == nullptr)
-            throw std::runtime_error("Failed to get function pointer : \"vkCreateDebugUtilsMessengerEXT.\"");
-        if(fun(instance_obj_ptr->handle, &create_info, nullptr, &debug_messenger.handle) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create debug util messenger object.");
-
-        DESTROY_QUEUE.push_back(&debug_messenger);   
-    }
-
-    void init_surface(VkInstance instance, VkSurfaceKHR& surface)
-    {
-        if (GLFW_INTERFACE.init_vk_surface(instance, surface) != VK_SUCCESS)
-            throw std::runtime_error("Failed to initialize vulkan surface");
-    }
-    
-    //only call GLFW functions here
+//only call GLFW functions here
     class GLFW_window_interface
     {
     public:
@@ -528,9 +539,197 @@ private:
         {
             return glfwCreateWindowSurface(instance, WINDOW_PTR, nullptr, &surface);
         }
+        VkExtent2D get_window_extent()
+        {
+            int width, height;
+            glfwGetFramebufferSize(WINDOW_PTR, &width, &height);
+
+            VkExtent2D window_extent;
+            window_extent.height = static_cast<uint32_t>(height);
+            window_extent.width = static_cast<uint32_t>(width);
+
+            return window_extent;
+        }
     private:
         GLFWwindow* WINDOW_PTR;
     };
+    
+    static vk_extension_info get_required_extension_names(VkInstance instance)
+    {
+        const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
+
+        std::vector<const char*> required_extension_names;
+        std::vector<const char*>     required_layer_names;
+
+        required_extension_names = GLFW_window_interface::get_glfw_required_extensions();
+//HACK hardcoding 
+        if(ENABLE_VALIDATION_LAYERS)
+        {
+            required_layer_names.push_back("VK_LAYER_KHRONOS_validation");
+            required_extension_names.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        }
+
+        vk_extension_info info{};
+        info.extensions = required_extension_names;
+        info.layers     =     required_layer_names;
+
+        return info;
+    }
+    
+    static void init_instance(VkInstance& instance ,const char* app_name)
+    {
+        auto create_info = get_debug_create_info();
+        void* ext_ptr = &create_info;
+
+        if(!DEBUG_MODE)
+            ext_ptr = nullptr;
+
+        init_vk_instance(instance, get_required_extension_names(instance), get_app_info(app_name), ext_ptr);
+    }
+    static void init_phys_device(VkPhysicalDevice& phys_device, VkInstance instance, VkSurfaceKHR surface)
+    {
+        const auto phys_devices = get_physical_devices(instance);
+
+        std::vector<VkPhysicalDevice> candidates;
+
+        size_t i = 1;
+        for(const auto& device : phys_devices)
+        {
+            ENG_LOG << "Physical device "<< i++ <<" check : \n";
+            if(is_adequate(device, surface))
+                candidates.push_back(device);
+        }
+        if(candidates.empty())
+            throw std::runtime_error("Failed to find adequate physical device.");
+//TODO pick the best-performing adequate physical device
+        phys_device = candidates[0];
+    }
+    
+    static void init_validation_layer(VkInstance instance ,VkDebugUtilsMessengerEXT& debug_messenger)
+    {
+        auto create_info = get_debug_create_info();
+
+        auto fun = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
+        instance, "vkCreateDebugUtilsMessengerEXT");
+
+        if(fun == nullptr)
+            throw std::runtime_error("Failed to get function pointer : \"vkCreateDebugUtilsMessengerEXT.\"");
+        if(fun(instance, &create_info, nullptr, &debug_messenger) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create debug util messenger object.");
+    }
+
+    static void init_surface(VkInstance instance, VkSurfaceKHR& surface, GLFW_window_interface glfw_interface)
+    {
+        if (glfw_interface.init_vk_surface(instance, surface) != VK_SUCCESS)
+            throw std::runtime_error("Failed to initialize vulkan surface");
+    }
+    
+    static void init_device(VkPhysicalDevice phys_device, std::vector<device_queue> device_queues, VkDevice& device)
+    {
+        std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
+
+        const float priority = 1.f;
+        for(const auto& queue : device_queues)
+        {
+            VkDeviceQueueCreateInfo create_info{};
+            create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            create_info.queueCount = queue.count, create_info.queueFamilyIndex = queue.family_index;
+            create_info.pQueuePriorities = &priority;
+
+            queue_create_infos.push_back(create_info);
+        }
+
+        VkDeviceCreateInfo device_create_info{};
+        device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+
+        auto extensions = ::get_required_extension_names(phys_device); //call function from global scope
+        device_create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
+        device_create_info.ppEnabledExtensionNames = extensions.data();
+
+        device_create_info.enabledLayerCount = 0;
+
+        device_create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
+        device_create_info.pQueueCreateInfos = queue_create_infos.data();
+
+        VkPhysicalDeviceFeatures no_features{};
+        device_create_info.pEnabledFeatures = &no_features;
+
+        if(vkCreateDevice(phys_device, &device_create_info, nullptr, &device) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create device.");
+    }
+    
+    static swapchain_features get_swapchain_features(swapchain_support swp_support, GLFW_window_interface glfw_interface)
+    {
+        VkSurfaceFormatKHR surface_format = swp_support.surface_formats[0];
+        for(const auto& surface_format_candidate : swp_support.surface_formats)
+            if(surface_format_candidate.format == VK_FORMAT_B8G8R8_SRGB && surface_format_candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+                surface_format = surface_format_candidate;
+        VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+        for(const auto& present_mode_candidate : swp_support.surface_present_modes)
+            if(present_mode_candidate == VK_PRESENT_MODE_MAILBOX_KHR)
+                present_mode = present_mode_candidate;
+        
+        VkExtent2D extent = determine_extent(swp_support.surface_capabilities, glfw_interface);
+        return {surface_format, present_mode, extent, swp_support.surface_capabilities};
+    }
+    static void init_swapchain(VkDevice device, std::vector<device_queue> device_queues, VkSurfaceKHR surface, VkSwapchainKHR& swapchain, swapchain_features features)
+    {
+        VkSurfaceFormatKHR& surface_format = features.surface_format;
+        VkExtent2D&                 extent =         features.extent;
+        VkPresentModeKHR&     present_mode =   features.present_mode;
+        VkSurfaceCapabilitiesKHR& surface_capabilities = features.surface_capabilities;
+
+        uint32_t min_image_count = surface_capabilities.minImageCount + 1;
+        if(surface_capabilities.maxImageCount > 0 && min_image_count > surface_capabilities.maxImageCount)
+            min_image_count = surface_capabilities.maxImageCount;
+
+        VkSwapchainCreateInfoKHR create_info{};
+        create_info.sType   =  VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        create_info.surface          =                             surface;
+        create_info.minImageCount    =                     min_image_count;
+        create_info.imageFormat      =               surface_format.format;
+        create_info.imageColorSpace  =           surface_format.colorSpace;
+        create_info.imageExtent      =                              extent;
+        create_info.presentMode      =                        present_mode;
+        create_info.imageArrayLayers =                                   1;
+        create_info.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+        create_info.preTransform     = surface_capabilities.currentTransform;
+        create_info.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        create_info.clipped          = VK_TRUE;
+        create_info.oldSwapchain     = VK_NULL_HANDLE;
+
+//HACK Assumption : each device has 1 graphics queue and 1 present queue, which may be the same queue
+        std::set<uint32_t> sharing_families; 
+        for(const auto& queue : device_queues)
+        {
+            if(queue.flags & GRAPHICS_BIT)
+                sharing_families.insert(queue.family_index);
+            if(queue.flags & PRESENT_BIT)
+                sharing_families.insert(queue.family_index);
+        }
+        if(sharing_families.size() == 1)
+            create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        else
+        {
+            create_info.imageSharingMode      = VK_SHARING_MODE_CONCURRENT;
+            create_info.queueFamilyIndexCount =    sharing_families.size(); //always 2?
+            create_info.pQueueFamilyIndices   = &*sharing_families.begin();
+        }
+        if(vkCreateSwapchainKHR(device, &create_info, nullptr, &swapchain) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create swapchain.");
+    }
+    static VkExtent2D determine_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFW_window_interface glfw_interface)
+    {
+        if(surface_capabilities.currentExtent.width != VK_UINT32_MAX) 
+            return surface_capabilities.currentExtent;
+        VkExtent2D window_extent = glfw_interface.get_window_extent();
+        window_extent.height = std::clamp(window_extent.height, surface_capabilities.minImageExtent.height, surface_capabilities.maxImageExtent.height);
+        window_extent.width  = std::clamp(window_extent.width, surface_capabilities.minImageExtent.width, surface_capabilities.maxImageExtent.width);
+
+        return window_extent;
+    }
+    
     GLFW_window_interface GLFW_INTERFACE;
 
     std::vector<destroyable*>   DESTROY_QUEUE;
