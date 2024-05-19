@@ -67,7 +67,13 @@ VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbac
     << std::endl;
     return VK_FALSE;
 }
-    
+
+struct swapchain_support
+{
+    VkSurfaceCapabilitiesKHR       surface_capabilities;
+    std::vector<VkSurfaceFormatKHR>     surface_formats;
+    std::vector<VkPresentModeKHR> surface_present_modes;
+};
 struct queue_indices
 {
     std::optional<uint32_t> graphics_queue_index, present_queue_index;
@@ -77,14 +83,11 @@ struct vk_extension_info
     std::vector<const char*> extensions;
     std::vector<const char*> layers;
 };
-std::vector<const char*> get_extension_info(VkPhysicalDevice device)
+std::vector<const char*> get_required_extension_names(VkPhysicalDevice device)
 {
     std::vector<const char*> required_extension_names;
 
     required_extension_names.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-
-    vk_extension_info info{};
-    info.extensions = required_extension_names;
 
     return required_extension_names;
 }
@@ -110,21 +113,6 @@ VkDebugUtilsMessengerCreateInfoEXT get_debug_create_info()
 
     return create_info;
 }
-queue_indices get_queue_indices(VkPhysicalDevice phys_device)
-{
-    queue_indices result;
-
-    uint32_t property_count;
-    vkGetPhysicalDeviceQueueFamilyProperties(phys_device, &property_count, nullptr);
-    std::vector<VkQueueFamilyProperties> queue_families(property_count);
-    for(size_t i = 0; i < property_count; i++)
-    {
-        if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-            result.graphics_queue_index = (uint32_t) i;
-
-    }
-    return result;
-}
 std::vector<VkPhysicalDevice> get_physical_devices(VkInstance instance)
 {
     uint32_t phys_devices_count;
@@ -135,11 +123,11 @@ std::vector<VkPhysicalDevice> get_physical_devices(VkInstance instance)
 }
 
 
-bool check_support(size_t available_name_count, const char** available_names, const char** required_names, size_t required_name_count)
+bool check_support(const size_t available_name_count, const char** available_names, const char** required_names, const size_t required_name_count)
 {
     if(required_name_count == 0)
         return true;
-    if(available_property_count == 0)
+    if(available_name_count == 0)
     {
         ENG_LOG << "WARNING : using a zero-sized array\n";
         return false;
@@ -149,12 +137,11 @@ bool check_support(size_t available_name_count, const char** available_names, co
         ENG_ERR_LOG << "WARNING : using nullptr\n";
         return false;
     }
-    
     bool result = true;
     for(size_t i = 0; i < required_name_count; i++)
     {
         bool found = false;
-        for(size_t j = 0; j < available_property_count; j++)
+        for(size_t j = 0; j < available_name_count; j++)
         {
             if(strcmp(required_names[i], available_names[j]) == 0)
             {
@@ -217,32 +204,95 @@ VkResult init_vk_instance(VkInstance& instance_ref, vk_extension_info ext_info, 
     return vkCreateInstance(&instance_create_info, nullptr, &instance_ref);
 }
 
-std::vector<const char*> get_properties(VkPhysicalDevice device)
+std::vector<const char*> get_extension_names(VkPhysicalDevice device)
 {
     uint32_t count;
     vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr);
     std::vector<VkExtensionProperties> properties(count);
     vkEnumerateDeviceExtensionProperties(device, nullptr, &count, properties.data());
 //HACK the above calls could fail
-    std::vector<const char*> property_names(count);
+    std::vector<const char*> property_names;
+    property_names.reserve(count); //XXX NEVER EVER USE THE FILL CONSTRUCTOR IT HAS FUCKED ME TWICE NOW
     for (const auto& property : properties)
         property_names.push_back(property.extensionName);
+
     return property_names;
 }
+std::vector<VkQueueFamilyProperties> get_queue_properties(VkPhysicalDevice device)
+{
+    uint32_t count;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> properties(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &count, properties.data());
+
+    return properties;
+}
+swapchain_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
+{
+    swapchain_support support;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_device, surface,
+    &support.surface_capabilities);
+
+    uint32_t format_count;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(phys_device, surface,
+    &format_count, nullptr);
+    if(format_count > 0)
+    {
+        support.surface_formats.resize(format_count);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(phys_device, surface,
+        &format_count, support.surface_formats.data());
+    }
+
+    uint32_t present_mode_count;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(phys_device, surface,
+    &present_mode_count, nullptr);
+    if(present_mode_count > 0)
+    {
+        support.surface_present_modes.resize(present_mode_count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(phys_device, surface,
+        &present_mode_count, support.surface_present_modes.data());
+    }
+    return support;
+}
+
 bool is_complete(queue_indices indices)
 {
     return indices.graphics_queue_index.has_value() && indices.present_queue_index.has_value();
 }
-bool is_adequate(VkPhysicalDevice phys_device)
+//Attempts to find a complete queue family in phys_device.
+//Be warned that this function may return indices that do not pass is_complete().
+queue_indices find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 {
-    queue_indices indices = get_queue_indices(phys_device);
+    const auto queue_families = get_queue_properties(phys_device);
+    queue_indices indices;
+    for(size_t i = 0; i < queue_families.size(); i++)
+    {
+        uint32_t i32 = static_cast<uint32_t>(i);
+        if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            indices.graphics_queue_index = i32;
+        VkBool32 supports_surface = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(phys_device, i32, surface, &supports_surface);
+        if(supports_surface)
+            indices.present_queue_index = i32;
+        if(is_complete(indices))
+            break;
+    }
+    return indices;
+}
+bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
+{
+    queue_indices indices = find_queue_family(phys_device, surface);
 
-    std::vector available_ext = get_properties(phys_device);
-    std::vector required_ext  = get_extension_info(phys_device);
+    auto avl_names = get_extension_names(phys_device);
+    
+    auto req_names = get_required_extension_names(phys_device);
+    bool extensions_supported = check_support(avl_names, req_names);
 
-    bool extensions_supported = check_support(available_ext, required_ext);
+    swapchain_support device_support = get_swapchain_support(phys_device, surface);
+    
+    bool supports_swapchain = !(device_support.surface_formats.empty() || device_support.surface_present_modes.empty());
 
-    return extensions_supported;
+    return extensions_supported && is_complete(indices) && supports_swapchain;
 }
 
 void destroy_debug_messenger(VkInstance instance, VkDebugUtilsMessengerEXT debug_messenger)
@@ -256,6 +306,7 @@ void destroy_debug_messenger(VkInstance instance, VkDebugUtilsMessengerEXT debug
     else
         throw std::runtime_error("Failed to find function pointer \"vkDestroyDebugUtilsMessengerEXT.\"");
 }
+
 /************************************************MODULES************************************************/
 
 class destroyable
@@ -341,15 +392,19 @@ public:
     {
         GLFW_INTERFACE.init(init_info.window_parameters);
 
-        init_instance(init_info.app_name);
-        if(DEBUG_MODE)
-            init_validation_layer();
-        init_phys_device();
+        static vk_instance instance;
+        init_instance(instance.handle ,init_info.app_name);
 
-        static vk_surface surface_obj(&INSTANCE_obj);
-        if (GLFW_INTERFACE.init_vk_surface(INSTANCE, surface_obj.handle) != VK_SUCCESS)
-            throw std::runtime_error("Failed to initialize vulkan window surface.");
-        DESTROY_QUEUE.push_back(&surface_obj);
+        if(DEBUG_MODE)
+            init_validation_layer(&instance);
+
+        static vk_surface surface_obj(&instance);
+        init_surface(instance.handle, surface_obj.handle);
+
+        static vk_phys_device phys_device;
+        init_phys_device(phys_device.handle, instance.handle, surface_obj.handle);
+
+        DESTROY_QUEUE.push_back(&instance);
     }
     //run this inside the render loop
     void invoke()
@@ -367,7 +422,7 @@ public:
         GLFW_INTERFACE.terminate();
     }
 private:
-    static vk_extension_info get_extension_info(VkInstance instance)
+    static vk_extension_info get_required_extension_names(VkInstance instance)
     {
         const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
 
@@ -389,7 +444,7 @@ private:
         return info;
     }
 
-    void init_instance(const char* app_name)
+    void init_instance(VkInstance& instance ,const char* app_name)
     {
         auto create_info = get_debug_create_info();
         void* ext_ptr = &create_info;
@@ -397,37 +452,52 @@ private:
         if(!DEBUG_MODE)
             ext_ptr = nullptr;
 
-        init_vk_instance(INSTANCE, get_extension_info(INSTANCE), get_app_info(app_name), ext_ptr);
-        DESTROY_QUEUE.push_back(&INSTANCE_obj);
+        init_vk_instance(instance, get_required_extension_names(instance), get_app_info(app_name), ext_ptr);
     }
-    void init_phys_device()
+    void init_phys_device(VkPhysicalDevice& phys_device, VkInstance instance, VkSurfaceKHR surface)
     {
-        const auto phys_devices = get_physical_devices(INSTANCE);
+        const auto phys_devices = get_physical_devices(instance);
 
         std::vector<VkPhysicalDevice> candidates;
-        for( const auto& device : phys_devices)
-            if(is_adequate(device))
+        
+        size_t i = 1;
+        for(const auto& device : phys_devices)
+        {
+            ENG_LOG << "Physical device "<< i++ <<" check : \n";
+            if(is_adequate(device, surface))
                 candidates.push_back(device);
-
-        DESTROY_QUEUE.push_back(&PHYS_DEVICE_obj);
+        }
+        if(candidates.empty())
+            throw std::runtime_error("Failed to find adequate physical device.");
+//TODO pick the best-performing adequate physical device
+        phys_device = candidates[0];
     }
     
-    void init_validation_layer()
+    void init_validation_layer(vk_instance* instance_obj_ptr)
     {
-        static vk_debug_messenger debug_messenger(&INSTANCE_obj);
+        if(instance_obj_ptr == nullptr)
+            throw std::runtime_error("nullptr received");
+
+        static vk_debug_messenger debug_messenger(instance_obj_ptr);
 
         auto create_info = get_debug_create_info();
 
         auto fun = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
-        INSTANCE, "vkCreateDebugUtilsMessengerEXT");
+        instance_obj_ptr->handle, "vkCreateDebugUtilsMessengerEXT");
         if(fun == nullptr)
             throw std::runtime_error("Failed to get function pointer : \"vkCreateDebugUtilsMessengerEXT.\"");
-        if(fun(INSTANCE, &create_info, nullptr, &debug_messenger.handle) != VK_SUCCESS)
+        if(fun(instance_obj_ptr->handle, &create_info, nullptr, &debug_messenger.handle) != VK_SUCCESS)
             throw std::runtime_error("Failed to create debug util messenger object.");
 
         DESTROY_QUEUE.push_back(&debug_messenger);   
     }
 
+    void init_surface(VkInstance instance, VkSurfaceKHR& surface)
+    {
+        if (GLFW_INTERFACE.init_vk_surface(instance, surface) != VK_SUCCESS)
+            throw std::runtime_error("Failed to initialize vulkan surface");
+    }
+    
     //only call GLFW functions here
     class GLFW_window_interface
     {
@@ -462,12 +532,6 @@ private:
         GLFWwindow* WINDOW_PTR;
     };
     GLFW_window_interface GLFW_INTERFACE;
-
-    vk_instance                   INSTANCE_obj;
-    vk_phys_device             PHYS_DEVICE_obj;
-
-    VkInstance&       INSTANCE    =    INSTANCE_obj.handle;
-    VkPhysicalDevice& PHYS_DEVICE = PHYS_DEVICE_obj.handle;
 
     std::vector<destroyable*>   DESTROY_QUEUE;
 };
