@@ -462,11 +462,6 @@ public:
     virtual void destroy() = 0;
 };
 
-template <class handle_t> class shared_handle
-{
-    uint32_t owners_count = 1;
-    handle_t value;
-};
 //Be warned that vk_objects transfer ownership of the underlying vulkan object through the copy constructor
 template <class handle_t> class vk_object : virtual public destroyable
 {
