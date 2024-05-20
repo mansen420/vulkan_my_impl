@@ -106,9 +106,9 @@ struct swapchain_features
     VkExtent2D                             extent;
     VkSurfaceCapabilitiesKHR surface_capabilities;
 };
-struct image_view_features
+struct image_view_description
 {
-    image_view_features()
+    image_view_description()
     {
         view_type = VK_IMAGE_VIEW_TYPE_2D;
         component_mapping.a = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -122,7 +122,7 @@ struct image_view_features
         subresources_range.baseMipLevel   = 0;
         subresources_range.levelCount     = 1;
     }
-    image_view_features(swapchain_features swp_features) : image_view_features()
+    image_view_description(swapchain_features swp_features) : image_view_description()
     {
         format = swp_features.surface_format.format;
     }
@@ -603,7 +603,7 @@ class vk_image_view      : public vk_object<VkImageView>             , public ch
         vkDestroyImageView(parent_ptr->handle, this->handle, nullptr);
     }
 public:
-    image_view_features features;
+    image_view_description features;
     vk_image_view(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_image_view() final {destroy();}
 };
@@ -663,7 +663,7 @@ public:
 
             vk_image_view image_view(&device);
 
-            image_view.features  = image_view_features(swapchain.features);
+            image_view.features  = image_view_description(swapchain.features);
             auto result = init_image_view(image, device.handle, image_view.handle, image_view.features);
             if(result != VK_SUCCESS)
                 throw std::runtime_error("Failed to create image views.");
@@ -738,7 +738,30 @@ private:
     private:
         GLFWwindow* WINDOW_PTR;
     };
-    
+    static VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFW_window_interface glfw_interface)
+    {
+        if(surface_capabilities.currentExtent.width != VK_UINT32_MAX) 
+            return surface_capabilities.currentExtent;
+        VkExtent2D window_extent = glfw_interface.get_window_extent();
+        window_extent.height = std::clamp(window_extent.height, surface_capabilities.minImageExtent.height, surface_capabilities.maxImageExtent.height);
+        window_extent.width  = std::clamp(window_extent.width, surface_capabilities.minImageExtent.width, surface_capabilities.maxImageExtent.width);
+
+        return window_extent;
+    }    
+    static swapchain_features get_swapchain_features(swapchain_support swp_support, GLFW_window_interface glfw_interface)
+    {
+        VkSurfaceFormatKHR surface_format = swp_support.surface_formats[0];
+        for(const auto& surface_format_candidate : swp_support.surface_formats)
+            if(surface_format_candidate.format == VK_FORMAT_B8G8R8_SRGB && surface_format_candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+                surface_format = surface_format_candidate;
+        VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+        for(const auto& present_mode_candidate : swp_support.surface_present_modes)
+            if(present_mode_candidate == VK_PRESENT_MODE_MAILBOX_KHR)
+                present_mode = present_mode_candidate;
+        
+        VkExtent2D extent = get_extent(swp_support.surface_capabilities, glfw_interface);
+        return {surface_format, present_mode, extent, swp_support.surface_capabilities};
+    }
     static vk_extension_info get_required_extension_names(VkInstance instance)
     {
         const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
@@ -771,6 +794,7 @@ private:
 
         init_vk_instance(instance, get_required_extension_names(instance), get_app_info(app_name), ext_ptr);
     }
+
     static void init_phys_device(VkPhysicalDevice& phys_device, VkInstance instance, VkSurfaceKHR surface)
     {
         const auto phys_devices = get_physical_devices(instance);
@@ -842,21 +866,7 @@ private:
         if(vkCreateDevice(phys_device, &device_create_info, nullptr, &device) != VK_SUCCESS)
             throw std::runtime_error("Failed to create device.");
     }
-    
-    static swapchain_features get_swapchain_features(swapchain_support swp_support, GLFW_window_interface glfw_interface)
-    {
-        VkSurfaceFormatKHR surface_format = swp_support.surface_formats[0];
-        for(const auto& surface_format_candidate : swp_support.surface_formats)
-            if(surface_format_candidate.format == VK_FORMAT_B8G8R8_SRGB && surface_format_candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
-                surface_format = surface_format_candidate;
-        VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-        for(const auto& present_mode_candidate : swp_support.surface_present_modes)
-            if(present_mode_candidate == VK_PRESENT_MODE_MAILBOX_KHR)
-                present_mode = present_mode_candidate;
-        
-        VkExtent2D extent = determine_extent(swp_support.surface_capabilities, glfw_interface);
-        return {surface_format, present_mode, extent, swp_support.surface_capabilities};
-    }
+   
     static void init_swapchain(VkDevice device, std::vector<device_queue> device_queues, VkSurfaceKHR surface, VkSwapchainKHR& swapchain, swapchain_features features)
     {
         VkSurfaceFormatKHR& surface_format = features.surface_format;
@@ -904,29 +914,19 @@ private:
         if(vkCreateSwapchainKHR(device, &create_info, nullptr, &swapchain) != VK_SUCCESS)
             throw std::runtime_error("Failed to create swapchain.");
     }
-    static VkExtent2D determine_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFW_window_interface glfw_interface)
-    {
-        if(surface_capabilities.currentExtent.width != VK_UINT32_MAX) 
-            return surface_capabilities.currentExtent;
-        VkExtent2D window_extent = glfw_interface.get_window_extent();
-        window_extent.height = std::clamp(window_extent.height, surface_capabilities.minImageExtent.height, surface_capabilities.maxImageExtent.height);
-        window_extent.width  = std::clamp(window_extent.width, surface_capabilities.minImageExtent.width, surface_capabilities.maxImageExtent.width);
-
-        return window_extent;
-    }
     
-    static VkResult init_image_view(VkImage image, VkDevice device, VkImageView& image_view, image_view_features features)
+    static VkResult init_image_view(VkImage image, VkDevice device, VkImageView& image_view, image_view_description description)
     {
         VkImageViewCreateInfo create_info{};
         create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         create_info.image = image;
 
-        create_info.viewType = features.view_type;
-        create_info.format   =    features.format;
+        create_info.viewType = description.view_type;
+        create_info.format   =    description.format;
         
-        create_info.components = features.component_mapping;
+        create_info.components = description.component_mapping;
 
-        create_info.subresourceRange = features.subresources_range;
+        create_info.subresourceRange = description.subresources_range;
 
         return vkCreateImageView(device, &create_info, nullptr, &image_view);
     }
