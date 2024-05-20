@@ -106,6 +106,100 @@ struct swapchain_features
     VkExtent2D                             extent;
     VkSurfaceCapabilitiesKHR surface_capabilities;
 };
+struct image_view_features
+{
+    image_view_features()
+    {
+        view_type = VK_IMAGE_VIEW_TYPE_2D;
+        component_mapping.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        component_mapping.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        component_mapping.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        component_mapping.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+        subresources_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        subresources_range.baseArrayLayer = 0;
+        subresources_range.layerCount     = 1;
+        subresources_range.baseMipLevel   = 0;
+        subresources_range.levelCount     = 1;
+    }
+    image_view_features(swapchain_features swp_features) : image_view_features()
+    {
+        format = swp_features.surface_format.format;
+    }
+    VkImageViewType                  view_type;
+    VkFormat                            format;
+    VkComponentMapping       component_mapping;
+    VkImageSubresourceRange subresources_range;
+};
+struct subpass_description
+{
+    VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+
+    std::vector<VkAttachmentReference>          color_attachment_refs;
+    std::vector<VkAttachmentReference>          input_attachment_refs;
+    std::optional<VkAttachmentReference> depth_stencil_attachment_ref;
+
+    VkSubpassDescription get_subpass_description() const
+    {
+        VkSubpassDescription subpass_desc{};
+
+        subpass_desc.colorAttachmentCount    =    static_cast<uint32_t>(color_attachment_refs.size());
+        subpass_desc.inputAttachmentCount    =    static_cast<uint32_t>(input_attachment_refs.size());
+
+        subpass_desc.pColorAttachments       = color_attachment_refs.data();
+        subpass_desc.pInputAttachments       = input_attachment_refs.data();
+        subpass_desc.pDepthStencilAttachment = depth_stencil_attachment_ref.has_value() ? &depth_stencil_attachment_ref.value() : nullptr;
+
+        subpass_desc.pipelineBindPoint = bind_point;
+
+        return subpass_desc;
+    }
+};
+struct renderpass_description
+{
+    std::vector<VkAttachmentDescription>      attachments;
+    std::vector<subpass_description> subpass_descriptions;
+    std::vector<VkSubpassDescription> get_subpasses() const
+    {
+        std::vector<VkSubpassDescription> descriptions;
+        descriptions.reserve(subpass_descriptions.size());
+        for(const auto& subpass : subpass_descriptions)
+            descriptions.push_back(subpass.get_subpass_description());
+        return descriptions;
+    }
+    std::vector<VkSubpassDependency> subpass_dependencies;
+};
+
+renderpass_description get_simple_renderpass_description(swapchain_features swp_features)
+{
+    VkAttachmentDescription attachment{};
+    attachment.initialLayout =       VK_IMAGE_LAYOUT_UNDEFINED;
+    attachment.finalLayout   = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    attachment.loadOp        =     VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment.storeOp       =    VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.samples       =           VK_SAMPLE_COUNT_1_BIT;
+    attachment.format        = swp_features.surface_format.format;
+
+    VkAttachmentReference attachment_ref{};
+    attachment_ref.attachment = 0; //index
+    attachment_ref.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    subpass_description subpass;
+    subpass.color_attachment_refs.push_back(attachment_ref);
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL, dependency.dstSubpass = 0;//index
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0, dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    renderpass_description description;
+    description.attachments.push_back(attachment);
+    description.subpass_descriptions.push_back(subpass);
+    description.subpass_dependencies.push_back(dependency);
+
+    return description;
+}
 
 std::vector<const char*> get_required_extension_names(VkPhysicalDevice device)
 {
@@ -295,7 +389,6 @@ swapchain_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceK
     }
     return support;
 }
-
 std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice device)
 {
     //retrieve image handles. Remember : image count specified in swapchain creation is only a minimum!
@@ -369,12 +462,18 @@ public:
     virtual void destroy() = 0;
 };
 
+template <class handle_t> class shared_handle
+{
+    uint32_t owners_count = 1;
+    handle_t value;
+};
+//Be warned that vk_objects transfer ownership of the underlying vulkan object through the copy constructor
 template <class handle_t> class vk_object : virtual public destroyable
 {
 protected:
     virtual void free_obj(){};
 public:
-    handle_t handle = VK_NULL_HANDLE;
+    mutable handle_t handle = VK_NULL_HANDLE;
     virtual void destroy() override final 
     {
         if(handle == VK_NULL_HANDLE)
@@ -382,6 +481,13 @@ public:
         free_obj();
         handle = VK_NULL_HANDLE;
     };
+    vk_object(const vk_object& copy)
+    {
+        this->handle =    copy.handle;
+        copy.handle  = VK_NULL_HANDLE;
+    }
+    vk_object(){}
+    vk_object(handle_t handle){this->handle = handle;}
     virtual ~vk_object(){destroy();}
 };
 
@@ -390,11 +496,18 @@ class parent : virtual public destroyable
 protected:
     virtual void destroy_children() final
     {
-        for(auto& child : children)
-            child->destroy();
+        const size_t SIZE = children.size(); 
+        for(size_t i = 0; i < SIZE; i++)
+            children[SIZE - i - 1]->destroy();
     }
     std::vector<destroyable*> children;
 public:
+    virtual ~parent() {children.clear();}
+    void remove_child(destroyable* child)
+    {
+        auto itr = std::find(children.begin(), children.end(), child);
+        children.erase(itr);
+    }
     void add_child(destroyable* child)
     {
         children.push_back(child);
@@ -404,11 +517,38 @@ template <class parent_t, std::enable_if_t<std::is_base_of<parent, parent_t>::va
 class child : virtual public destroyable
 {
 public:
+    child() = delete;
+    child& operator= (const child& rhs)
+    {
+        if(this == &rhs)
+            return *this;
+        this->parent_ptr = rhs.parent_ptr;
+        parent* p = (parent*)parent_ptr;
+        p->add_child(this);
+        return *this;
+    }
+    child& operator= (const child&& rhs)
+    {
+        this->parent_ptr = rhs.parent_ptr;
+        parent* p = (parent*)parent_ptr;
+        p->add_child(this);
+        return *this;
+    }
+    child(const child& copy)
+    {
+        *this = copy;
+    }
+    
     child(parent_t* parent_ptr) 
     {
         this->parent_ptr = parent_ptr;
         parent* p = (parent*)parent_ptr;
         p->add_child(this);
+    }
+    virtual ~child()
+    {
+        parent* p = (parent*)parent_ptr;
+        p->remove_child(this);
     }
     parent_t* parent_ptr;
 };
@@ -416,6 +556,8 @@ public:
 class vk_instance        : public vk_object<VkInstance>              , public parent
 {
 public:
+    virtual ~vk_instance() final {destroy();}
+private:
     virtual void free_obj() override final
     {
         destroy_children();
@@ -424,20 +566,24 @@ public:
 };
 class vk_debug_messenger : public vk_object<VkDebugUtilsMessengerEXT>, public child<vk_instance>
 {
+    virtual void free_obj() override final{destroy_debug_messenger(parent_ptr->handle, this->handle);}
 public:
     vk_debug_messenger(vk_instance* parent) : child<vk_instance>(parent) {}
-    virtual void free_obj() override final{destroy_debug_messenger(parent_ptr->handle, this->handle);}
+    virtual ~vk_debug_messenger() final {destroy();}
 };
 class vk_surface         : public vk_object<VkSurfaceKHR>            , public child<vk_instance>
 {
+    virtual void free_obj(){vkDestroySurfaceKHR(parent_ptr->handle, this->handle, nullptr);}
 public:
     vk_surface(vk_instance* parent) : child<vk_instance>(parent) {}
-    virtual void free_obj(){vkDestroySurfaceKHR(parent_ptr->handle, this->handle, nullptr);}
+    virtual ~vk_surface() final {destroy();}
 };
 class vk_device          : public vk_object<VkDevice>                , public parent
 {
 public:
     std::vector<device_queue> device_queues;
+    virtual ~vk_device() final {destroy();}
+private:
     virtual void free_obj() override final
     {
         destroy_children();
@@ -446,13 +592,36 @@ public:
 };
 class vk_swapchain       : public vk_object<VkSwapchainKHR>          , public child<vk_device>
 {
-public:
-    swapchain_features features;
-    vk_swapchain(vk_device* parent) : child<vk_device>(parent) {}
     virtual void free_obj() override final
     {
         vkDestroySwapchainKHR(parent_ptr->handle, handle, nullptr);
     }
+public:
+    swapchain_features features;
+    vk_swapchain(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_swapchain() final {destroy();}
+};
+class vk_image_view      : public vk_object<VkImageView>             , public child<vk_device>
+{
+    virtual void free_obj() override final
+    {
+        vkDestroyImageView(parent_ptr->handle, this->handle, nullptr);
+    }
+public:
+    image_view_features features;
+    vk_image_view(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_image_view() final {destroy();}
+};
+class vk_renderpass      : public vk_object<VkRenderPass>            , public child<vk_device>
+{
+    virtual void free_obj() override final
+    {
+        vkDestroyRenderPass(parent_ptr->handle, this->handle, nullptr);
+    }
+public:
+    renderpass_description description;
+    vk_renderpass(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_renderpass() final {destroy();}
 };
 typedef vk_object<VkPhysicalDevice> vk_phys_device;
 
@@ -490,6 +659,27 @@ public:
         swapchain_support swp_support = get_swapchain_support(phys_device.handle, surface.handle);
         swapchain.features = get_swapchain_features(swp_support, GLFW_INTERFACE);
         init_swapchain(device.handle, device.device_queues, surface.handle, swapchain.handle, swapchain.features);
+
+        auto swapchain_images = get_swapchain_images(swapchain.handle, device.handle);
+        static std::vector<vk_image_view> swapchain_image_views; 
+        for(size_t i = 0; i < swapchain_images.size(); i++)
+        {
+            auto& image = swapchain_images[i];
+
+            vk_image_view image_view(&device);
+
+            image_view.features  = image_view_features(swapchain.features);
+            auto result = init_image_view(image, device.handle, image_view.handle, image_view.features);
+            if(result != VK_SUCCESS)
+                throw std::runtime_error("Failed to create image views.");
+
+            swapchain_image_views.push_back(image_view);
+        }
+
+        static vk_renderpass renderpass(&device);
+        renderpass.description = get_simple_renderpass_description(swapchain.features);
+        if(init_render_pass(device.handle, renderpass.handle, renderpass.description) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create renderpass.");
 
         DESTROY_QUEUE.push_back(&device);
     }
@@ -730,6 +920,40 @@ private:
         return window_extent;
     }
     
+    static VkResult init_image_view(VkImage image, VkDevice device, VkImageView& image_view, image_view_features features)
+    {
+        VkImageViewCreateInfo create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        create_info.image = image;
+
+        create_info.viewType = features.view_type;
+        create_info.format   =    features.format;
+        
+        create_info.components = features.component_mapping;
+
+        create_info.subresourceRange = features.subresources_range;
+
+        return vkCreateImageView(device, &create_info, nullptr, &image_view);
+    }
+
+    static VkResult init_render_pass(VkDevice device, VkRenderPass& renderpass, renderpass_description description)
+    {
+        VkRenderPassCreateInfo create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+
+        create_info.attachmentCount = static_cast<uint32_t>(description.attachments.size());
+        create_info.subpassCount    = static_cast<uint32_t>(description.subpass_descriptions.size());
+        create_info.pAttachments    = description.attachments.data();
+
+        std::vector<VkSubpassDescription> subpasses = description.get_subpasses();
+        create_info.pSubpasses = subpasses.data();
+
+        create_info.dependencyCount = static_cast<uint32_t>(description.subpass_dependencies.size());
+        create_info.pDependencies   = description.subpass_dependencies.data();
+
+        return vkCreateRenderPass(device, &create_info, nullptr, &renderpass);
+    }
+
     GLFW_window_interface GLFW_INTERFACE;
 
     std::vector<destroyable*>   DESTROY_QUEUE;
