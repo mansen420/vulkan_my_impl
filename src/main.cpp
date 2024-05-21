@@ -230,7 +230,7 @@ public:
     vk_object(){}
 
     virtual bool     empty()      final {return handle == VK_NULL_HANDLE;}
-    virtual handle_t get_handle() final {return handle;}
+    virtual handle_t get_handle() const final {return handle;}
 
     virtual ~vk_object(){destroy();}
 };
@@ -633,6 +633,14 @@ struct viewport_state_desc
     {
         this->viewports = viewports;
         this->scissors  = scissors;
+    }
+    
+    VkPipelineViewportStateCreateInfo get_info()
+    {
+        VkPipelineViewportStateCreateInfo info;
+
+        this->viewports = viewports;
+        this->scissors  = scissors;
 
         info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 
@@ -641,26 +649,50 @@ struct viewport_state_desc
 
         info.viewportCount = static_cast<uint32_t>(viewports.size());
         info.pViewports    = viewports.data();
+
+        return info;
     }
+    
     std::vector<VkViewport>          viewports;
     std::vector<VkRect2D>             scissors;
-    VkPipelineViewportStateCreateInfo     info;
 };
 struct color_blend_desc
 {
-    VkPipelineColorBlendStateCreateInfo                           info;
+    color_blend_desc(){}
+    VkPipelineColorBlendStateCreateInfo get_info()
+    {
+        VkPipelineColorBlendStateCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+
+        info.attachmentCount = static_cast<uint32_t>(attachment_states.size()), info.pAttachments = attachment_states.data();
+
+        info.logicOpEnable = logic_op_enabled;
+        if(info.logicOpEnable)
+            info.logicOp = logic_op;
+        if(blend_constants.has_value())
+            for(size_t i = 0; i < 4; i++)
+                info.blendConstants[i] = blend_constants.value()[i];
+        return info;
+    }
+    VkBool32 logic_op_enabled;
+    std::optional<std::array<float, 4>> blend_constants;
+    VkLogicOp logic_op;
     std::vector<VkPipelineColorBlendAttachmentState> attachment_states;
 };
 struct dynamic_state_desc
 {
     dynamic_state_desc(){}
-    dynamic_state_desc(std::vector<VkDynamicState> dynamic_state_list)
+    dynamic_state_desc(std::vector<VkDynamicState> dynamic_state_list){this->dynamic_state_list = dynamic_state_list;}
+    std::vector<VkDynamicState> dynamic_state_list;
+    VkPipelineDynamicStateCreateInfo get_info()
     {
+        VkPipelineDynamicStateCreateInfo info{};
+
         info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
         info.pDynamicStates = dynamic_state_list.data(), info.dynamicStateCount = static_cast<uint32_t>(dynamic_state_list.size());
-    }
-    std::vector<VkDynamicState> dynamic_state_list;
-    VkPipelineDynamicStateCreateInfo info;
+
+        return info;
+    };
 };
 struct graphics_pipeline_desc
 {
@@ -685,12 +717,15 @@ struct graphics_pipeline_desc
 
         pipeline_info.pVertexInputState   =   &vertex_input_info;
         pipeline_info.pInputAssemblyState = &input_assembly_info;
-        pipeline_info.pViewportState      = &viewport_state_info.info;
+        auto vp = viewport_state_info.get_info();
+        pipeline_info.pViewportState      = &vp;
         pipeline_info.pRasterizationState =  &rasterization_info;
         pipeline_info.pMultisampleState   =    &multisample_info;
         pipeline_info.pDepthStencilState  =  depth_stencil_info.has_value() ? &depth_stencil_info.value() : nullptr;
-        pipeline_info.pColorBlendState    =    &color_blend_info.info;
-        pipeline_info.pDynamicState       =  &dynamic_state_info.info;
+        auto clrblnd = color_blend_info.get_info();
+        pipeline_info.pColorBlendState    =    &clrblnd;
+        auto dynmcst = dynamic_state_info.get_info();
+        pipeline_info.pDynamicState       =  &dynmcst;
         
         pipeline_info.layout     = pipeline_layout;
         pipeline_info.renderPass =      renderpass;
@@ -707,6 +742,31 @@ struct pipeline_layout_desc
         info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 
         return info;        
+    }
+};
+struct framebuffer_desc
+{
+    std::vector<VkImageView> attachments;
+    VkRenderPass              renderpass;
+    uint32_t width, height;
+    uint32_t layers = 1;
+    VkFramebufferCreateFlags flags;
+
+    VkFramebufferCreateInfo get_create_info()
+    {
+        VkFramebufferCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+
+        info.attachmentCount = static_cast<uint32_t>(attachments.size());
+        info.pAttachments    = attachments.data();
+
+        info.renderPass = renderpass;
+
+        info.width  =  width, info.height = height;
+        info.layers = layers;
+        info.flags  =  flags;
+
+        return info;
     }
 };
 
@@ -757,9 +817,7 @@ color_blend_desc get_color_no_blend_state_descr(std::vector<VkPipelineColorBlend
     color_blend_desc description{};
 
     description.attachment_states = states;
-    description.info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    description.info.logicOpEnable = VK_FALSE;
-    description.info.pAttachments = states.data(), description.info.attachmentCount = static_cast<uint32_t>(states.size());
+    description.logic_op_enabled = VK_FALSE;
 
     return description;
 }
@@ -1062,6 +1120,21 @@ public:
     vk_pipeline_layout(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_pipeline_layout() final {destroy();}
 };
+class vk_framebuffer       : public vk_object<VkFramebuffer           , framebuffer_desc>      , public child<vk_device>
+{   
+    virtual VkResult create_obj(framebuffer_desc desc)
+    {
+        auto info = desc.get_create_info();
+        return vkCreateFramebuffer(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
+    virtual void     free_obj() override final
+    {
+        vkDestroyFramebuffer(parent_ptr->get_handle(), this->handle, nullptr);
+    }
+public:
+    vk_framebuffer(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_framebuffer() final {destroy();}
+};
 
 //only call the vulkan API here
 class vulkan_communication_instance
@@ -1162,11 +1235,33 @@ public:
         pipeline_layout.init();
         graphics_pipeline.description.pipeline_layout = pipeline_layout.get_handle();
 
+        static std::vector<vk_framebuffer> framebuffers;
+        framebuffers.reserve(swapchain_image_views.size());
+        for(size_t i = 0; i < framebuffers.size(); i++)
+        {
+            vk_framebuffer framebuffer(&device);
+
+            const auto& image_view = swapchain_image_views[i];
+
+            framebuffer.description.attachments = {image_view.get_handle()};
+            framebuffer.description.height = swapchain.description.features.extent.height;
+            framebuffer.description.width  =  swapchain.description.features.extent.width;
+            framebuffer.description.renderpass  = renderpass.get_handle();
+
+            if(framebuffer.init())
+                throw std::runtime_error("Failed to create framebuffer");
+
+            framebuffers.push_back(framebuffer);
+        }
+
+        
+
         DESTROY_QUEUE.push_back(&device);
     }
     //run this inside the render loop
     void invoke()
     {
+
     }
     //run this once at the end
     //note that a vulkan_communication_layer object can not be restarted after termination
@@ -1201,6 +1296,7 @@ private:
                 present_mode = present_mode_candidate;
         
         VkExtent2D extent = get_extent(swp_support.surface_capabilities, glfw_interface);
+
         return {surface_format, present_mode, extent, swp_support.surface_capabilities};
     }
     static extension_info get_instance_required_extension_names()
