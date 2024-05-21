@@ -50,7 +50,7 @@ struct vulkan_communication_instance_init_info
     const char* app_name;
 };
 
-/************************************************HELPER FUNCTIONS, PRIVATE STRUCTS************************************************/
+/************************************************HELPER VK API FUNCS************************************************/
 
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback_fun(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, 
 VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data, void* p_user_data)
@@ -71,68 +71,6 @@ VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbac
     << std::endl;
     return VK_FALSE;
 }
-
-struct swapchain_support
-{
-    VkSurfaceCapabilitiesKHR       surface_capabilities;
-    std::vector<VkSurfaceFormatKHR>     surface_formats;
-    std::vector<VkPresentModeKHR> surface_present_modes;
-};
-//Stores indices of queue families that support support various operations
-struct queue_family_indices
-{
-    std::optional<uint32_t> graphics_fam_index, present_fam_index;
-};
-enum queue_support_flag_bits
-{
-    GRAPHICS_BIT = 0b0001,
-    PRESENT_BIT  = 0b0010
-};
-//Stores family index, count, uses, and priority of a logical device queue
-struct device_queue
-{
-    uint32_t family_index;
-    uint32_t count;
-    uint32_t flags;
-    float priority;
-};
-struct extension_info
-{
-    std::vector<const char*> extensions;
-    std::vector<const char*> layers;
-};
-struct swapchain_features
-{
-    VkSurfaceFormatKHR             surface_format;
-    VkPresentModeKHR                 present_mode;
-    VkExtent2D                             extent;
-    VkSurfaceCapabilitiesKHR surface_capabilities;
-};
-struct image_view_description
-{
-    image_view_description()
-    {
-        view_type = VK_IMAGE_VIEW_TYPE_2D;
-        component_mapping.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-        component_mapping.r = VK_COMPONENT_SWIZZLE_IDENTITY;
-        component_mapping.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-        component_mapping.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-
-        subresources_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        subresources_range.baseArrayLayer = 0;
-        subresources_range.layerCount     = 1;
-        subresources_range.baseMipLevel   = 0;
-        subresources_range.levelCount     = 1;
-    }
-    image_view_description(swapchain_features swp_features) : image_view_description()
-    {
-        format = swp_features.surface_format.format;
-    }
-    VkImageViewType                  view_type;
-    VkFormat                            format;
-    VkComponentMapping       component_mapping;
-    VkImageSubresourceRange subresources_range;
-};
 
 
 std::vector<const char*> get_required_extension_names(VkPhysicalDevice device)
@@ -173,28 +111,6 @@ std::vector<VkPhysicalDevice> get_physical_devices(VkInstance instance)
     vkEnumeratePhysicalDevices(instance,&phys_devices_count, phys_devices.data());
     return phys_devices;
 }
-std::vector<device_queue> get_device_queues(queue_family_indices fam_indices)
-{
-    std::set<uint32_t> indices = {fam_indices.graphics_fam_index.value(), fam_indices.present_fam_index.value()};
-
-    std::vector<device_queue> device_queues;
-    
-    for(const auto& index: indices)
-    {
-        device_queue queue;
-        queue.count = 1, queue.family_index = index; //FIXME chek that count isn't too big
-        if(index == fam_indices.graphics_fam_index)
-        {
-            queue.flags |= GRAPHICS_BIT;
-        }
-        if(index == fam_indices.present_fam_index)
-        {
-            queue.flags |= PRESENT_BIT;
-        }
-        device_queues.push_back(queue);
-    }
-    return device_queues;
-}
 
 bool check_support(const size_t available_name_count, const char* const* available_names, const char* const* required_names, const size_t required_name_count)
 {
@@ -234,49 +150,6 @@ bool check_support(const std::vector<const char*> available_names, const std::ve
     return check_support(available_names.size(), available_names.data(), required_names.data(), required_names.size());
 }
 
-//Attempts to create vulkan instance in instance_ref.
-//Also checks for extension and layer support, throwing a std::runtime_error in case of failure.
-VkResult init_vk_instance(VkInstance& instance_ref, extension_info ext_info, const VkApplicationInfo app_info, void* next_ptr)
-{
-    //first, check for extension and layer support
-    uint32_t instance_property_count;
-    vkEnumerateInstanceExtensionProperties(nullptr, &instance_property_count,
-    nullptr);
-    VkExtensionProperties instance_properties[instance_property_count];
-    vkEnumerateInstanceExtensionProperties(nullptr, &instance_property_count, instance_properties);
-
-    const char* instance_extension_names[instance_property_count];
-    for(size_t i = 0; i < instance_property_count; i++)
-        instance_extension_names[i] = instance_properties[i].extensionName;
-
-    if(!check_support((size_t) instance_property_count, instance_extension_names, ext_info.extensions.data(), ext_info.extensions.size()))
-        throw std::runtime_error("Failed to find required instance extensions");
-    
-    uint32_t instance_layer_count;
-    vkEnumerateInstanceLayerProperties(&instance_layer_count, nullptr);
-    VkLayerProperties instance_layer_properties[instance_layer_count];
-    vkEnumerateInstanceLayerProperties(&instance_layer_count, instance_layer_properties);
-
-    const char* instance_layer_names[instance_layer_count];
-    for(size_t i = 0; i < instance_layer_count; i++)
-        instance_layer_names[i] = instance_layer_properties[i].layerName;
-
-    if(!check_support((size_t) instance_layer_count, instance_layer_names, ext_info.layers.data(), ext_info.layers.size()))
-        throw std::runtime_error("Failed to find required instance layers");
-
-    //create instance 
-    VkInstanceCreateInfo instance_create_info{};
-    instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    instance_create_info.pApplicationInfo = &app_info;
-    instance_create_info.enabledExtensionCount = static_cast<uint32_t>(ext_info.extensions.size());
-    instance_create_info.ppEnabledExtensionNames = ext_info.extensions.data();
-    instance_create_info.enabledLayerCount = static_cast<uint32_t>(ext_info.layers.size());
-    instance_create_info.ppEnabledLayerNames = ext_info.layers.data();
-    instance_create_info.pNext = next_ptr;
-    
-    return vkCreateInstance(&instance_create_info, nullptr, &instance_ref);
-}
-
 std::vector<const char*> get_extension_names(VkPhysicalDevice device)
 {
     uint32_t count;
@@ -300,33 +173,6 @@ std::vector<VkQueueFamilyProperties> get_queue_properties(VkPhysicalDevice devic
 
     return properties;
 }
-swapchain_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
-{
-    swapchain_support support;
-    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_device, surface,
-    &support.surface_capabilities);
-
-    uint32_t format_count;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(phys_device, surface,
-    &format_count, nullptr);
-    if(format_count > 0)
-    {
-        support.surface_formats.resize(format_count);
-        vkGetPhysicalDeviceSurfaceFormatsKHR(phys_device, surface,
-        &format_count, support.surface_formats.data());
-    }
-
-    uint32_t present_mode_count;
-    vkGetPhysicalDeviceSurfacePresentModesKHR(phys_device, surface,
-    &present_mode_count, nullptr);
-    if(present_mode_count > 0)
-    {
-        support.surface_present_modes.resize(present_mode_count);
-        vkGetPhysicalDeviceSurfacePresentModesKHR(phys_device, surface,
-        &present_mode_count, support.surface_present_modes.data());
-    }
-    return support;
-}
 std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice device)
 {
     //retrieve image handles. Remember : image count specified in swapchain creation is only a minimum!
@@ -340,59 +186,7 @@ std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice dev
     return swapchain_images;
 }
 
-bool is_complete(queue_family_indices indices)
-{
-    return indices.graphics_fam_index.has_value() && indices.present_fam_index.has_value();
-}
-//Attempts to find a complete queue family in phys_device.
-//Be warned that this function may return indices that do not pass is_complete().
-queue_family_indices find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
-{
-    const auto queue_families = get_queue_properties(phys_device);
-    queue_family_indices indices;
-    for(size_t i = 0; i < queue_families.size(); i++)
-    {
-        uint32_t i32 = static_cast<uint32_t>(i);
-        if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-            indices.graphics_fam_index = i32;
-        VkBool32 supports_surface = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(phys_device, i32, surface, &supports_surface);
-        if(supports_surface)
-            indices.present_fam_index = i32;
-        if(is_complete(indices))
-            break;
-    }
-    return indices;
-}
-bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
-{
-    queue_family_indices indices = find_queue_family(phys_device, surface);
-
-    auto avl_names = get_extension_names(phys_device);
-    
-    auto req_names = get_required_extension_names(phys_device);
-    bool extensions_supported = check_support(avl_names, req_names);
-
-    swapchain_support device_support = get_swapchain_support(phys_device, surface);
-    
-    bool supports_swapchain = !(device_support.surface_formats.empty() || device_support.surface_present_modes.empty());
-
-    return extensions_supported && is_complete(indices) && supports_swapchain;
-}
-
-void destroy_debug_messenger(VkInstance instance, VkDebugUtilsMessengerEXT debug_messenger)
-{
-    if(!DEBUG_MODE)
-        return;
-    auto fun = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
-    instance, "vkDestroyDebugUtilsMessengerEXT");
-    if(fun != nullptr)
-        fun(instance, debug_messenger, nullptr);
-    else
-        throw std::runtime_error("Failed to find function pointer \"vkDestroyDebugUtilsMessengerEXT.\"");
-}
-
-/************************************************MODULES************************************************/
+/************************************************BASE CLASSES************************************************/
 
 class destroyable
 {
@@ -443,6 +237,73 @@ public:
     virtual ~vk_object(){destroy();}
 };
 
+
+class parent : virtual public destroyable
+{
+protected:
+    virtual void destroy_children() final
+    {
+        const size_t SIZE = children.size(); 
+        for(size_t i = 0; i < SIZE; i++)
+            children[SIZE - i - 1]->destroy();
+    }
+    std::vector<destroyable*> children;
+public:
+    virtual ~parent() {children.clear();}
+    void remove_child(destroyable* child)
+    {
+        auto itr = std::find(children.begin(), children.end(), child);
+        children.erase(itr);
+    }
+    void add_child(destroyable* child)
+    {
+        children.push_back(child);
+    }
+};
+template <class parent_t, std::enable_if_t<std::is_base_of<parent, parent_t>::value && !std::is_same<parent_t, parent>::value, int> = 0 >
+class child : virtual public destroyable
+{
+public:
+    child() = delete;
+    child& operator= (const child& rhs)
+    {
+        if(this == &rhs)
+            return *this;
+        this->parent_ptr = rhs.parent_ptr;
+        parent* p = (parent*)parent_ptr;
+        p->add_child(this);
+        return *this;
+    }
+    child& operator= (const child&& rhs)
+    {
+        this->parent_ptr = rhs.parent_ptr;
+        parent* p = (parent*)parent_ptr;
+        p->add_child(this);
+        return *this;
+    }
+    child(const child& copy)
+    {
+        *this = copy;
+    }
+    
+    child(parent_t* parent_ptr) 
+    {
+        this->parent_ptr = parent_ptr;
+        parent* p = (parent*)parent_ptr;
+        p->add_child(this);
+    }
+    virtual ~child()
+    {
+        parent* p = (parent*)parent_ptr;
+        p->remove_child(this);
+    }
+    parent_t* parent_ptr;
+};
+
+
+/************************************************MODULES & DATA************************************************/
+
+
 //only call GLFW functions here
 class GLFW_window_interface
 {
@@ -488,6 +349,18 @@ private:
     GLFWwindow* WINDOW_PTR;
 };
 
+
+struct queue_family_indices //Stores indices of queue families that support support various operations
+{
+    std::optional<uint32_t> graphics_fam_index, present_fam_index;
+};
+struct extension_info
+{
+    std::vector<const char*> extensions;
+    std::vector<const char*> layers;
+};
+
+
 struct instance_desc
 {
     extension_info ext_info;
@@ -519,6 +392,18 @@ struct debug_messenger_desc
 struct surface_desc
 {
     GLFW_window_interface glfw_interface;
+};
+enum queue_support_flag_bits
+{
+    GRAPHICS_BIT = 0b0001,
+    PRESENT_BIT  = 0b0010
+};
+struct device_queue //Stores family index, count, uses, and priority of a logical device queue 
+{
+    uint32_t family_index;
+    uint32_t count;
+    uint32_t flags;
+    float priority;
 };
 struct device_desc
 {
@@ -556,6 +441,19 @@ struct device_desc
     }
 private:
     std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
+};
+struct swapchain_support
+{
+    VkSurfaceCapabilitiesKHR       surface_capabilities;
+    std::vector<VkSurfaceFormatKHR>     surface_formats;
+    std::vector<VkPresentModeKHR> surface_present_modes;
+};
+struct swapchain_features
+{
+    VkSurfaceFormatKHR             surface_format;
+    VkPresentModeKHR                 present_mode;
+    VkExtent2D                             extent;
+    VkSurfaceCapabilitiesKHR surface_capabilities;
 };
 struct swapchain_desc
 {
@@ -758,68 +656,94 @@ renderpass_description get_simple_renderpass_description(swapchain_features swp_
 
     return description;
 }
+std::vector<device_queue> get_device_queues(queue_family_indices fam_indices)
+{
+    std::set<uint32_t> indices = {fam_indices.graphics_fam_index.value(), fam_indices.present_fam_index.value()};
 
-class parent : virtual public destroyable
-{
-protected:
-    virtual void destroy_children() final
-    {
-        const size_t SIZE = children.size(); 
-        for(size_t i = 0; i < SIZE; i++)
-            children[SIZE - i - 1]->destroy();
-    }
-    std::vector<destroyable*> children;
-public:
-    virtual ~parent() {children.clear();}
-    void remove_child(destroyable* child)
-    {
-        auto itr = std::find(children.begin(), children.end(), child);
-        children.erase(itr);
-    }
-    void add_child(destroyable* child)
-    {
-        children.push_back(child);
-    }
-};
-template <class parent_t, std::enable_if_t<std::is_base_of<parent, parent_t>::value && !std::is_same<parent_t, parent>::value, int> = 0 >
-class child : virtual public destroyable
-{
-public:
-    child() = delete;
-    child& operator= (const child& rhs)
-    {
-        if(this == &rhs)
-            return *this;
-        this->parent_ptr = rhs.parent_ptr;
-        parent* p = (parent*)parent_ptr;
-        p->add_child(this);
-        return *this;
-    }
-    child& operator= (const child&& rhs)
-    {
-        this->parent_ptr = rhs.parent_ptr;
-        parent* p = (parent*)parent_ptr;
-        p->add_child(this);
-        return *this;
-    }
-    child(const child& copy)
-    {
-        *this = copy;
-    }
+    std::vector<device_queue> device_queues;
     
-    child(parent_t* parent_ptr) 
+    for(const auto& index: indices)
     {
-        this->parent_ptr = parent_ptr;
-        parent* p = (parent*)parent_ptr;
-        p->add_child(this);
+        device_queue queue;
+        queue.count = 1, queue.family_index = index; //FIXME chek that count isn't too big
+        if(index == fam_indices.graphics_fam_index)
+        {
+            queue.flags |= GRAPHICS_BIT;
+        }
+        if(index == fam_indices.present_fam_index)
+        {
+            queue.flags |= PRESENT_BIT;
+        }
+        device_queues.push_back(queue);
     }
-    virtual ~child()
+    return device_queues;
+}
+bool is_complete(queue_family_indices indices)
+{
+    return indices.graphics_fam_index.has_value() && indices.present_fam_index.has_value();
+}
+swapchain_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
+{
+    swapchain_support support;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_device, surface,
+    &support.surface_capabilities);
+
+    uint32_t format_count;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(phys_device, surface,
+    &format_count, nullptr);
+    if(format_count > 0)
     {
-        parent* p = (parent*)parent_ptr;
-        p->remove_child(this);
+        support.surface_formats.resize(format_count);
+        vkGetPhysicalDeviceSurfaceFormatsKHR(phys_device, surface,
+        &format_count, support.surface_formats.data());
     }
-    parent_t* parent_ptr;
-};
+
+    uint32_t present_mode_count;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(phys_device, surface,
+    &present_mode_count, nullptr);
+    if(present_mode_count > 0)
+    {
+        support.surface_present_modes.resize(present_mode_count);
+        vkGetPhysicalDeviceSurfacePresentModesKHR(phys_device, surface,
+        &present_mode_count, support.surface_present_modes.data());
+    }
+    return support;
+}
+//Attempts to find a complete queue family in phys_device.
+//Be warned that this function may return indices that do not pass is_complete().
+queue_family_indices find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
+{
+    const auto queue_families = get_queue_properties(phys_device);
+    queue_family_indices indices;
+    for(size_t i = 0; i < queue_families.size(); i++)
+    {
+        uint32_t i32 = static_cast<uint32_t>(i);
+        if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            indices.graphics_fam_index = i32;
+        VkBool32 supports_surface = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(phys_device, i32, surface, &supports_surface);
+        if(supports_surface)
+            indices.present_fam_index = i32;
+        if(is_complete(indices))
+            break;
+    }
+    return indices;
+}
+bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
+{
+    queue_family_indices indices = find_queue_family(phys_device, surface);
+
+    auto avl_names = get_extension_names(phys_device);
+    
+    auto req_names = get_required_extension_names(phys_device);
+    bool extensions_supported = check_support(avl_names, req_names);
+
+    swapchain_support device_support = get_swapchain_support(phys_device, surface);
+    
+    bool supports_swapchain = !(device_support.surface_formats.empty() || device_support.surface_present_modes.empty());
+
+    return extensions_supported && is_complete(indices) && supports_swapchain;
+}
 
 class vk_instance        : public vk_object<VkInstance              , instance_desc>         , public parent
 {
@@ -851,6 +775,17 @@ class vk_debug_messenger : public vk_object<VkDebugUtilsMessengerEXT, debug_mess
             throw std::runtime_error("Failed to get function pointer : \"vkCreateDebugUtilsMessengerEXT.\"");
 
         return fun(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
+    void destroy_debug_messenger(VkInstance instance, VkDebugUtilsMessengerEXT debug_messenger)
+    {
+        if(!DEBUG_MODE)
+            return;
+        auto fun = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
+        instance, "vkDestroyDebugUtilsMessengerEXT");
+        if(fun != nullptr)
+            fun(instance, debug_messenger, nullptr);
+        else
+            throw std::runtime_error("Failed to find function pointer \"vkDestroyDebugUtilsMessengerEXT.\"");
     }
     virtual void free_obj() override final{destroy_debug_messenger(parent_ptr->get_handle(), this->handle);}
 public:
@@ -1147,59 +1082,14 @@ private:
 //TODO pick the best-performing adequate physical device
         phys_device = candidates[0];
     }
-
-    static void init_swapchain(VkDevice device, std::vector<device_queue> device_queues, VkSurfaceKHR surface, VkSwapchainKHR& swapchain, swapchain_features features)
-    {
-        VkSurfaceFormatKHR& surface_format = features.surface_format;
-        VkExtent2D&                 extent =         features.extent;
-        VkPresentModeKHR&     present_mode =   features.present_mode;
-        VkSurfaceCapabilitiesKHR& surface_capabilities = features.surface_capabilities;
-
-        uint32_t min_image_count = surface_capabilities.minImageCount + 1;
-        if(surface_capabilities.maxImageCount > 0 && min_image_count > surface_capabilities.maxImageCount)
-            min_image_count = surface_capabilities.maxImageCount;
-
-        VkSwapchainCreateInfoKHR create_info{};
-        create_info.sType   =  VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-        create_info.surface          =                             surface;
-        create_info.minImageCount    =                     min_image_count;
-        create_info.imageFormat      =               surface_format.format;
-        create_info.imageColorSpace  =           surface_format.colorSpace;
-        create_info.imageExtent      =                              extent;
-        create_info.presentMode      =                        present_mode;
-        create_info.imageArrayLayers =                                   1;
-        create_info.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-        create_info.preTransform     = surface_capabilities.currentTransform;
-        create_info.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-        create_info.clipped          = VK_TRUE;
-        create_info.oldSwapchain     = VK_NULL_HANDLE;
-
-//HACK Assumption : each device has 1 graphics queue and 1 present queue, which may be the same queue
-        std::set<uint32_t> sharing_families; 
-        for(const auto& queue : device_queues)
-        {
-            if(queue.flags & GRAPHICS_BIT)
-                sharing_families.insert(queue.family_index);
-            if(queue.flags & PRESENT_BIT)
-                sharing_families.insert(queue.family_index);
-        }
-        if(sharing_families.size() == 1)
-            create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        else
-        {
-            create_info.imageSharingMode      = VK_SHARING_MODE_CONCURRENT;
-            create_info.queueFamilyIndexCount =    sharing_families.size(); //always 2?
-            create_info.pQueueFamilyIndices   = &*sharing_families.begin();
-        }
-        if(vkCreateSwapchainKHR(device, &create_info, nullptr, &swapchain) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create swapchain.");
-    }
     
     GLFW_window_interface GLFW_INTERFACE;
 
     std::vector<destroyable*>   DESTROY_QUEUE;
 };
+
+
+/************************************************APPLICATION************************************************/
 
 
 int main()
