@@ -769,6 +769,21 @@ struct framebuffer_desc
         return info;
     }
 };
+struct cmd_pool_desc
+{
+    VkCommandPoolCreateFlags flags;
+    uint32_t       queue_fam_index;
+
+    VkCommandPoolCreateInfo get_create_info()
+    {
+        VkCommandPoolCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        info.queueFamilyIndex = queue_fam_index;
+        info.flags = flags;
+
+        return info;
+    }
+};
 
 VkPipelineVertexInputStateCreateInfo get_empty_vertex_input_state()
 {
@@ -1135,6 +1150,21 @@ public:
     vk_framebuffer(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_framebuffer() final {destroy();}
 };
+class vk_cmd_pool          : public vk_object<VkCommandPool           , cmd_pool_desc>         , public child<vk_device>
+{
+    virtual VkResult create_obj(cmd_pool_desc desc)
+    {
+        auto info = desc.get_create_info();
+        return vkCreateCommandPool(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
+    virtual void free_obj() override final
+    {
+        vkDestroyCommandPool(parent_ptr->get_handle(), this->handle, nullptr);
+    }
+public:
+    vk_cmd_pool(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_cmd_pool() final {destroy();}
+};
 
 //only call the vulkan API here
 class vulkan_communication_instance
@@ -1254,6 +1284,11 @@ public:
             framebuffers.push_back(framebuffer);
         }
 
+        vk_cmd_pool cmd_pool(&device);
+        cmd_pool.description.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        cmd_pool.description.queue_fam_index = find_queue_family(phys_device, surface.get_handle()).graphics_fam_index.value();
+        if (cmd_pool.init())
+            throw std::runtime_error("Failed to create command pool");
         
 
         DESTROY_QUEUE.push_back(&device);
