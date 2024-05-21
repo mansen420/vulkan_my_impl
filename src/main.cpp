@@ -72,7 +72,6 @@ VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbac
     return VK_FALSE;
 }
 
-
 std::vector<const char*> get_required_extension_names(VkPhysicalDevice device)
 {
     std::vector<const char*> required_extension_names;
@@ -158,7 +157,7 @@ std::vector<const char*> get_extension_names(VkPhysicalDevice device)
     vkEnumerateDeviceExtensionProperties(device, nullptr, &count, properties.data());
 //HACK the above calls could fail
     std::vector<const char*> property_names;
-    property_names.reserve(count); //XXX NEVER EVER USE THE FILL CONSTRUCTOR IT HAS FUCKED ME TWICE NOW
+    property_names.reserve(count); //NEVER EVER USE THE FILL CONSTRUCTOR IT HAS FUCKED ME TWICE NOW
     for (const auto& property : properties)
         property_names.push_back(property.extensionName);
 
@@ -194,9 +193,8 @@ public:
     virtual void destroy() = 0;
 };
 
-struct empty_description{};
 //Be warned that vk_objects transfer ownership of the underlying vulkan object through the copy constructor
-template <class handle_t, class description_t = empty_description> 
+template <class handle_t, class description_t> 
 class vk_object : virtual public destroyable
 {
 protected:
@@ -237,7 +235,6 @@ public:
     virtual ~vk_object(){destroy();}
 };
 
-
 class parent : virtual public destroyable
 {
 protected:
@@ -260,6 +257,7 @@ public:
         children.push_back(child);
     }
 };
+
 template <class parent_t, std::enable_if_t<std::is_base_of<parent, parent_t>::value && !std::is_same<parent_t, parent>::value, int> = 0 >
 class child : virtual public destroyable
 {
@@ -580,7 +578,7 @@ struct subpass_description
         return subpass_desc;
     }
 };
-struct renderpass_description
+struct renderpass_desc
 {
     std::vector<VkAttachmentDescription>      attachments;
     std::vector<subpass_description> subpass_descriptions;
@@ -615,6 +613,9 @@ private:
 };
 struct shader_module_desc
 {
+    VkShaderStageFlagBits stage;
+    const char* entry_point_name = "main";
+
     std::vector<char> byte_code;
     VkShaderModuleCreateInfo get_create_info()
     {
@@ -625,8 +626,160 @@ struct shader_module_desc
         return create_info;
     }
 };
+struct viewport_state_desc
+{
+    viewport_state_desc(){}
+    viewport_state_desc(std::vector<VkViewport> viewports, std::vector<VkRect2D> scissors)
+    {
+        this->viewports = viewports;
+        this->scissors  = scissors;
 
-renderpass_description get_simple_renderpass_description(swapchain_features swp_features)
+        info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+
+        info.scissorCount  = static_cast<uint32_t>(scissors.size());
+        info.pScissors     = scissors.data();
+
+        info.viewportCount = static_cast<uint32_t>(viewports.size());
+        info.pViewports    = viewports.data();
+    }
+    std::vector<VkViewport>          viewports;
+    std::vector<VkRect2D>             scissors;
+    VkPipelineViewportStateCreateInfo     info;
+};
+struct color_blend_desc
+{
+    VkPipelineColorBlendStateCreateInfo                           info;
+    std::vector<VkPipelineColorBlendAttachmentState> attachment_states;
+};
+struct dynamic_state_desc
+{
+    dynamic_state_desc(){}
+    dynamic_state_desc(std::vector<VkDynamicState> dynamic_state_list)
+    {
+        info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        info.pDynamicStates = dynamic_state_list.data(), info.dynamicStateCount = static_cast<uint32_t>(dynamic_state_list.size());
+    }
+    std::vector<VkDynamicState> dynamic_state_list;
+    VkPipelineDynamicStateCreateInfo info;
+};
+struct graphics_pipeline_desc
+{
+    VkPipelineLayout              pipeline_layout;
+    VkRenderPass                       renderpass;
+    uint32_t                        subpass_index;
+    std::optional<VkPipelineCache> pipeline_cache;
+    std::optional<VkPipelineDepthStencilStateCreateInfo> depth_stencil_info;
+    std::vector<VkPipelineShaderStageCreateInfo> shader_stages_info;
+    VkPipelineVertexInputStateCreateInfo          vertex_input_info;
+    VkPipelineInputAssemblyStateCreateInfo      input_assembly_info;
+    dynamic_state_desc                           dynamic_state_info;
+    viewport_state_desc                         viewport_state_info;
+    VkPipelineRasterizationStateCreateInfo       rasterization_info;
+    VkPipelineMultisampleStateCreateInfo           multisample_info;
+    color_blend_desc                               color_blend_info;
+    VkGraphicsPipelineCreateInfo get_create_info()
+    {
+        VkGraphicsPipelineCreateInfo pipeline_info{};
+        pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline_info.stageCount = static_cast<uint32_t>(shader_stages_info.size()), pipeline_info.pStages = shader_stages_info.data();
+
+        pipeline_info.pVertexInputState   =   &vertex_input_info;
+        pipeline_info.pInputAssemblyState = &input_assembly_info;
+        pipeline_info.pViewportState      = &viewport_state_info.info;
+        pipeline_info.pRasterizationState =  &rasterization_info;
+        pipeline_info.pMultisampleState   =    &multisample_info;
+        pipeline_info.pDepthStencilState  =  depth_stencil_info.has_value() ? &depth_stencil_info.value() : nullptr;
+        pipeline_info.pColorBlendState    =    &color_blend_info.info;
+        pipeline_info.pDynamicState       =  &dynamic_state_info.info;
+        
+        pipeline_info.layout     = pipeline_layout;
+        pipeline_info.renderPass =      renderpass;
+        pipeline_info.subpass    =   subpass_index;
+
+        return pipeline_info;
+    }
+};
+struct pipeline_layout_desc
+{
+    VkPipelineLayoutCreateInfo get_create_info()
+    {
+        VkPipelineLayoutCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+
+        return info;        
+    }
+};
+
+VkPipelineVertexInputStateCreateInfo get_empty_vertex_input_state()
+{
+    VkPipelineVertexInputStateCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    info.vertexBindingDescriptionCount = 0, info.vertexAttributeDescriptionCount = 0;
+    return info;
+}
+VkPipelineInputAssemblyStateCreateInfo get_input_assemly_state(VkPrimitiveTopology primitives, VkBool32 primitive_restart_enabled)
+{
+    VkPipelineInputAssemblyStateCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    info.topology = primitives, info.primitiveRestartEnable = primitive_restart_enabled;
+    return info;
+}
+VkPipelineRasterizationStateCreateInfo get_simple_rasterization_info(VkPolygonMode polygon_mode, float line_width)
+{
+    VkPipelineRasterizationStateCreateInfo info{};
+
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+
+    info.polygonMode = polygon_mode, info.lineWidth = line_width;
+
+    info.depthBiasEnable = VK_FALSE,  info.rasterizerDiscardEnable = VK_FALSE, info.depthClampEnable = VK_FALSE;
+
+    info.cullMode = VK_CULL_MODE_BACK_BIT, info.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    
+    return info;
+}
+VkPipelineMultisampleStateCreateInfo get_disabled_multisample_info()
+{
+    VkPipelineMultisampleStateCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    info.sampleShadingEnable = VK_FALSE; info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    return info;
+}
+VkPipelineColorBlendAttachmentState get_color_no_blend_attachment(VkColorComponentFlags color_write_mask)
+{
+    VkPipelineColorBlendAttachmentState state{};
+    state.colorWriteMask = color_write_mask;
+    state.blendEnable = VK_FALSE;
+    return state;
+}
+color_blend_desc get_color_no_blend_state_descr(std::vector<VkPipelineColorBlendAttachmentState> states)
+{
+    color_blend_desc description{};
+
+    description.attachment_states = states;
+    description.info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    description.info.logicOpEnable = VK_FALSE;
+    description.info.pAttachments = states.data(), description.info.attachmentCount = static_cast<uint32_t>(states.size());
+
+    return description;
+}
+std::vector<VkPipelineShaderStageCreateInfo> get_shader_stages(std::vector<shader_module_desc> module_descriptions, std::vector<VkShaderModule> module_handles)
+{
+    std::vector<VkPipelineShaderStageCreateInfo> stage_infos;
+    stage_infos.reserve(module_descriptions.size());
+    for(size_t i = 0; i < module_descriptions.size(); i++)
+    {
+        VkPipelineShaderStageCreateInfo info{};
+        info.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        info.stage  = module_descriptions[i].stage;
+        info.pName  = module_descriptions[i].entry_point_name;
+        info.module = module_handles[i];
+        stage_infos.push_back(info);
+    }
+    return stage_infos;
+}
+
+renderpass_desc get_simple_renderpass_description(swapchain_features swp_features)
 {
     VkAttachmentDescription attachment{};
     attachment.initialLayout =       VK_IMAGE_LAYOUT_UNDEFINED;
@@ -649,7 +802,7 @@ renderpass_description get_simple_renderpass_description(swapchain_features swp_
     dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     dependency.srcAccessMask = 0, dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 
-    renderpass_description description;
+    renderpass_desc description;
     description.attachments.push_back(attachment);
     description.subpass_descriptions.push_back(subpass);
     description.subpass_dependencies.push_back(dependency);
@@ -745,7 +898,7 @@ bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
     return extensions_supported && is_complete(indices) && supports_swapchain;
 }
 
-class vk_instance        : public vk_object<VkInstance              , instance_desc>         , public parent
+class vk_instance          : public vk_object<VkInstance              , instance_desc>         , public parent
 {
 public:
     virtual ~vk_instance() final {destroy();}
@@ -761,7 +914,7 @@ private:
         vkDestroyInstance(handle, nullptr);
     }
 };
-class vk_debug_messenger : public vk_object<VkDebugUtilsMessengerEXT, debug_messenger_desc>  , public child<vk_instance>
+class vk_debug_messenger   : public vk_object<VkDebugUtilsMessengerEXT, debug_messenger_desc>  , public child<vk_instance>
 {
     virtual VkResult create_obj(debug_messenger_desc desc) override final
     {
@@ -792,7 +945,7 @@ public:
     vk_debug_messenger(vk_instance* parent) : child<vk_instance>(parent) {}
     virtual ~vk_debug_messenger() final {destroy();}
 };
-class vk_surface         : public vk_object<VkSurfaceKHR            , surface_desc>          , public child<vk_instance>
+class vk_surface           : public vk_object<VkSurfaceKHR            , surface_desc>          , public child<vk_instance>
 {
     virtual VkResult create_obj(surface_desc desc) override final
     {
@@ -803,7 +956,7 @@ public:
     vk_surface(vk_instance* parent) : child<vk_instance>(parent) {}
     virtual ~vk_surface() final {destroy();}
 };
-class vk_device          : public vk_object<VkDevice                , device_desc>           , public parent
+class vk_device            : public vk_object<VkDevice                , device_desc>           , public parent
 {
 public:
     virtual ~vk_device() final {destroy();}
@@ -819,7 +972,7 @@ private:
         vkDestroyDevice(handle, nullptr);
     }
 };
-class vk_swapchain       : public vk_object<VkSwapchainKHR          , swapchain_desc>        , public child<vk_device>
+class vk_swapchain         : public vk_object<VkSwapchainKHR          , swapchain_desc>        , public child<vk_device>
 {
     virtual VkResult create_obj(swapchain_desc desc) override final
     {
@@ -834,7 +987,7 @@ public:
     vk_swapchain(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_swapchain() final {destroy();}
 };
-class vk_image_view      : public vk_object<VkImageView             , image_view_desc>       , public child<vk_device>
+class vk_image_view        : public vk_object<VkImageView             , image_view_desc>       , public child<vk_device>
 {
     virtual VkResult create_obj(image_view_desc desc) override final
     {
@@ -849,9 +1002,9 @@ public:
     vk_image_view(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_image_view() final {destroy();}
 };
-class vk_renderpass      : public vk_object<VkRenderPass            , renderpass_description>, public child<vk_device>
+class vk_renderpass        : public vk_object<VkRenderPass            , renderpass_desc>       , public child<vk_device>
 {
-    virtual VkResult create_obj(renderpass_description desc)
+    virtual VkResult create_obj(renderpass_desc desc)
     {
         auto info = desc.get_create_info();
         return vkCreateRenderPass(parent_ptr->get_handle(), &info, nullptr, &this->handle);
@@ -864,7 +1017,7 @@ public:
     vk_renderpass(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_renderpass() final {destroy();}
 };
-class vk_shader_module   : public vk_object<VkShaderModule          , shader_module_desc>    , public child<vk_device>
+class vk_shader_module     : public vk_object<VkShaderModule          , shader_module_desc>    , public child<vk_device>
 {
     virtual void free_obj() override final
     {
@@ -878,6 +1031,36 @@ class vk_shader_module   : public vk_object<VkShaderModule          , shader_mod
 public:
     vk_shader_module(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_shader_module() final {destroy();}
+};
+class vk_graphics_pipeline : public vk_object<VkPipeline              , graphics_pipeline_desc>, public child<vk_device>
+{
+    virtual VkResult create_obj(graphics_pipeline_desc desc) override final
+    {
+        auto info = desc.get_create_info();
+        return vkCreateGraphicsPipelines(parent_ptr->get_handle(), desc.pipeline_cache.value_or(VK_NULL_HANDLE), 1, &info, nullptr, &this->handle);
+    }
+    virtual void free_obj() override final
+    {
+        vkDestroyPipeline(parent_ptr->get_handle(), this->handle, nullptr);
+    }
+public:
+    vk_graphics_pipeline(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_graphics_pipeline() final {destroy();}
+};
+class vk_pipeline_layout   : public vk_object<VkPipelineLayout        , pipeline_layout_desc>  , public child<vk_device>
+{
+    virtual VkResult create_obj(pipeline_layout_desc desc)
+    {
+        auto info = desc.get_create_info();
+        return vkCreatePipelineLayout(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
+    virtual void free_obj() override final
+    {
+        vkDestroyPipelineLayout(parent_ptr->get_handle(), this->handle,  nullptr);
+    }
+public:
+    vk_pipeline_layout(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_pipeline_layout() final {destroy();}
 };
 
 //only call the vulkan API here
@@ -953,18 +1136,37 @@ public:
         read_binary_file({"shaders/"}, "triangle_frag.spv", fragment_code);
         read_binary_file({"shaders/"}, "triangle_vert.spv", vertex_code);
 
-        static vk_shader_module fragment_module(&device), vertex_module(&device);
+        vk_shader_module fragment_module(&device), vertex_module(&device);
         fragment_module.description.byte_code = fragment_code;
         vertex_module.description.byte_code   =   vertex_code;
+        vertex_module.description.stage = VK_SHADER_STAGE_VERTEX_BIT, fragment_module.description.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
         if(fragment_module.init() || vertex_module.init())
             throw std::runtime_error("Failed to create shader modules");
+
+        static vk_graphics_pipeline graphics_pipeline(&device);
+        graphics_pipeline.description.shader_stages_info = get_shader_stages({vertex_module.description, fragment_module.description},
+        {vertex_module.get_handle(), fragment_module.get_handle()});
+        graphics_pipeline.description.color_blend_info = get_color_no_blend_state_descr({get_color_no_blend_attachment
+        (VK_COLOR_COMPONENT_A_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_R_BIT)});
+        graphics_pipeline.description.dynamic_state_info = dynamic_state_desc({VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR});
+        graphics_pipeline.description.input_assembly_info = get_input_assemly_state(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE);
+        graphics_pipeline.description.multisample_info = get_disabled_multisample_info();
+        graphics_pipeline.description.rasterization_info = get_simple_rasterization_info(VK_POLYGON_MODE_FILL, 1.f);
+        graphics_pipeline.description.viewport_state_info = viewport_state_desc({{0.f, 0.f,
+        (float)swapchain.description.features.extent.width, (float)swapchain.description.features.extent.height, 0.f, 1.f}}, 
+        {{0, 0, swapchain.description.features.extent}});
+        
+        graphics_pipeline.description.renderpass = renderpass.get_handle();
+        graphics_pipeline.description.subpass_index = 0;
+        vk_pipeline_layout pipeline_layout(&device);
+        pipeline_layout.init();
+        graphics_pipeline.description.pipeline_layout = pipeline_layout.get_handle();
 
         DESTROY_QUEUE.push_back(&device);
     }
     //run this inside the render loop
     void invoke()
     {
-
     }
     //run this once at the end
     //note that a vulkan_communication_layer object can not be restarted after termination
