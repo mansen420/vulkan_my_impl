@@ -1,5 +1,6 @@
 #define GLFW_INCLUDE_VULKAN
 #include "GLFW/glfw3.h"
+#include "read_file.h"
 
 #include <iostream>
 #include <vector>
@@ -87,14 +88,15 @@ enum queue_support_flag_bits
     GRAPHICS_BIT = 0b0001,
     PRESENT_BIT  = 0b0010
 };
-//Stores family index, count, and uses of a logical device queue
+//Stores family index, count, uses, and priority of a logical device queue
 struct device_queue
 {
     uint32_t family_index;
     uint32_t count;
     uint32_t flags;
+    float priority;
 };
-struct vk_extension_info
+struct extension_info
 {
     std::vector<const char*> extensions;
     std::vector<const char*> layers;
@@ -131,75 +133,7 @@ struct image_view_description
     VkComponentMapping       component_mapping;
     VkImageSubresourceRange subresources_range;
 };
-struct subpass_description
-{
-    VkPipelineBindPoint bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
 
-    std::vector<VkAttachmentReference>          color_attachment_refs;
-    std::vector<VkAttachmentReference>          input_attachment_refs;
-    std::optional<VkAttachmentReference> depth_stencil_attachment_ref;
-
-    VkSubpassDescription get_subpass_description() const
-    {
-        VkSubpassDescription subpass_desc{};
-
-        subpass_desc.colorAttachmentCount    =    static_cast<uint32_t>(color_attachment_refs.size());
-        subpass_desc.inputAttachmentCount    =    static_cast<uint32_t>(input_attachment_refs.size());
-
-        subpass_desc.pColorAttachments       = color_attachment_refs.data();
-        subpass_desc.pInputAttachments       = input_attachment_refs.data();
-        subpass_desc.pDepthStencilAttachment = depth_stencil_attachment_ref.has_value() ? &depth_stencil_attachment_ref.value() : nullptr;
-
-        subpass_desc.pipelineBindPoint = bind_point;
-
-        return subpass_desc;
-    }
-};
-struct renderpass_description
-{
-    std::vector<VkAttachmentDescription>      attachments;
-    std::vector<subpass_description> subpass_descriptions;
-    std::vector<VkSubpassDescription> get_subpasses() const
-    {
-        std::vector<VkSubpassDescription> descriptions;
-        descriptions.reserve(subpass_descriptions.size());
-        for(const auto& subpass : subpass_descriptions)
-            descriptions.push_back(subpass.get_subpass_description());
-        return descriptions;
-    }
-    std::vector<VkSubpassDependency> subpass_dependencies;
-};
-
-renderpass_description get_simple_renderpass_description(swapchain_features swp_features)
-{
-    VkAttachmentDescription attachment{};
-    attachment.initialLayout =       VK_IMAGE_LAYOUT_UNDEFINED;
-    attachment.finalLayout   = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    attachment.loadOp        =     VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachment.storeOp       =    VK_ATTACHMENT_STORE_OP_STORE;
-    attachment.samples       =           VK_SAMPLE_COUNT_1_BIT;
-    attachment.format        = swp_features.surface_format.format;
-
-    VkAttachmentReference attachment_ref{};
-    attachment_ref.attachment = 0; //index
-    attachment_ref.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    subpass_description subpass;
-    subpass.color_attachment_refs.push_back(attachment_ref);
-
-    VkSubpassDependency dependency{};
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL, dependency.dstSubpass = 0;//index
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.srcAccessMask = 0, dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-
-    renderpass_description description;
-    description.attachments.push_back(attachment);
-    description.subpass_descriptions.push_back(subpass);
-    description.subpass_dependencies.push_back(dependency);
-
-    return description;
-}
 
 std::vector<const char*> get_required_extension_names(VkPhysicalDevice device)
 {
@@ -244,21 +178,25 @@ std::vector<device_queue> get_device_queues(queue_family_indices fam_indices)
     std::set<uint32_t> indices = {fam_indices.graphics_fam_index.value(), fam_indices.present_fam_index.value()};
 
     std::vector<device_queue> device_queues;
-
+    
     for(const auto& index: indices)
     {
         device_queue queue;
-        queue.count = 1, queue.family_index = index;
+        queue.count = 1, queue.family_index = index; //FIXME chek that count isn't too big
         if(index == fam_indices.graphics_fam_index)
+        {
             queue.flags |= GRAPHICS_BIT;
+        }
         if(index == fam_indices.present_fam_index)
+        {
             queue.flags |= PRESENT_BIT;
+        }
         device_queues.push_back(queue);
     }
     return device_queues;
 }
 
-bool check_support(const size_t available_name_count, const char** available_names, const char** required_names, const size_t required_name_count)
+bool check_support(const size_t available_name_count, const char* const* available_names, const char* const* required_names, const size_t required_name_count)
 {
     if(required_name_count == 0)
         return true;
@@ -291,14 +229,14 @@ bool check_support(const size_t available_name_count, const char** available_nam
     }
     return result;
 };
-bool check_support(std::vector<const char*> available_names, std::vector<const char*> required_names)
+bool check_support(const std::vector<const char*> available_names, const std::vector<const char*> required_names)
 {
     return check_support(available_names.size(), available_names.data(), required_names.data(), required_names.size());
 }
 
 //Attempts to create vulkan instance in instance_ref.
 //Also checks for extension and layer support, throwing a std::runtime_error in case of failure.
-VkResult init_vk_instance(VkInstance& instance_ref, vk_extension_info ext_info, const VkApplicationInfo app_info, void* next_ptr)
+VkResult init_vk_instance(VkInstance& instance_ref, extension_info ext_info, const VkApplicationInfo app_info, void* next_ptr)
 {
     //first, check for extension and layer support
     uint32_t instance_property_count;
@@ -462,29 +400,364 @@ public:
     virtual void destroy() = 0;
 };
 
+struct empty_description{};
 //Be warned that vk_objects transfer ownership of the underlying vulkan object through the copy constructor
-template <class handle_t> class vk_object : virtual public destroyable
+template <class handle_t, class description_t = empty_description> 
+class vk_object : virtual public destroyable
 {
 protected:
-    virtual void free_obj(){};
+    virtual void free_obj(){}
+    virtual VkResult create_obj(description_t desc){return VK_NOT_READY;}
+    mutable handle_t handle   = VK_NULL_HANDLE;
 public:
-    mutable handle_t handle = VK_NULL_HANDLE;
+    description_t description;
+
+    //Throws runtime error if object is empty.
+    //Be warned that initializing an object without a well defined description will cause fuck-ups!
+    virtual VkResult init(description_t desc) final {this->description = desc; return init();}
+    //Throws runtime error if object is empty.
+    //Be warned that initializing an object without a well defined description will cause fuck-ups!
+    virtual VkResult init() final
+    {
+        return create_obj(description);
+    }
+    
     virtual void destroy() override final 
     {
-        if(handle == VK_NULL_HANDLE)
+        if(empty())
             return;
         free_obj();
         handle = VK_NULL_HANDLE;
     };
+    
     vk_object(const vk_object& copy)
     {
         this->handle =    copy.handle;
         copy.handle  = VK_NULL_HANDLE;
     }
     vk_object(){}
-    vk_object(handle_t handle){this->handle = handle;}
+
+    virtual bool     empty()      final {return handle == VK_NULL_HANDLE;}
+    virtual handle_t get_handle() final {return handle;}
+
     virtual ~vk_object(){destroy();}
 };
+
+//only call GLFW functions here
+class GLFW_window_interface
+{
+public:
+    void init(window_info window_parameters = window_info())
+    {
+        glfwInit();
+        //we assume this is a vulkan application
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+
+        WINDOW_PTR = glfwCreateWindow(window_parameters.width, window_parameters.height, window_parameters.title, nullptr, nullptr);
+    };
+    void terminate()
+    {
+        glfwDestroyWindow(WINDOW_PTR);
+        glfwTerminate();
+    }
+    static std::vector<const char*> get_glfw_required_extensions()
+    {
+        uint32_t count;
+        const char** data = glfwGetRequiredInstanceExtensions(&count);
+        //Apparently pointers can function like iterators: vector(c_array, c_array + size). nice!
+        std::vector<const char*> extensions(data, data + count);
+        return extensions;
+    }
+    VkResult init_vk_surface(VkInstance instance, VkSurfaceKHR& surface)
+    {
+        return glfwCreateWindowSurface(instance, WINDOW_PTR, nullptr, &surface);
+    }
+    VkExtent2D get_window_extent()
+    {
+        int width, height;
+        glfwGetFramebufferSize(WINDOW_PTR, &width, &height);
+
+        VkExtent2D window_extent;
+        window_extent.height = static_cast<uint32_t>(height);
+        window_extent.width = static_cast<uint32_t>(width);
+
+        return window_extent;
+    }
+private:
+    GLFWwindow* WINDOW_PTR;
+};
+
+struct instance_desc
+{
+    extension_info ext_info;
+    VkApplicationInfo app_info{};
+    VkInstanceCreateFlags flags = 0;
+    std::optional<VkDebugUtilsMessengerCreateInfoEXT> debug_messenger_ext;
+    VkInstanceCreateInfo get_create_info()
+    {
+        VkInstanceCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        info.pApplicationInfo = &app_info;
+        info.enabledExtensionCount = static_cast<uint32_t>(ext_info.extensions.size());
+        info.ppEnabledExtensionNames = ext_info.extensions.data();
+        info.enabledLayerCount = static_cast<uint32_t>(ext_info.layers.size());
+        info.ppEnabledLayerNames = ext_info.layers.data();
+        info.flags = flags;
+        info.pNext = debug_messenger_ext.has_value() ? &debug_messenger_ext.value() : nullptr;
+        return info;
+    }
+};
+struct debug_messenger_desc
+{
+    VkDebugUtilsMessengerCreateInfoEXT create_info{};
+    VkDebugUtilsMessengerCreateInfoEXT get_create_info()
+    {
+        return create_info;
+    }
+};
+struct surface_desc
+{
+    GLFW_window_interface glfw_interface;
+};
+struct device_desc
+{
+    VkPhysicalDevice phys_device;
+    std::vector<device_queue>     device_queues;
+    std::vector<const char*> enabled_extensions;
+    VkPhysicalDeviceFeatures   enabled_features{};
+
+    VkDeviceCreateInfo get_create_info()
+    {
+        VkDeviceCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+
+        for(const auto& queue : device_queues)
+        {
+            VkDeviceQueueCreateInfo create_info{};
+            create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            create_info.queueCount = queue.count, create_info.queueFamilyIndex = queue.family_index;
+            create_info.pQueuePriorities = &queue.priority;
+
+            queue_create_infos.push_back(create_info);
+        }
+
+        info.enabledExtensionCount   = static_cast<uint32_t>(enabled_extensions.size());
+        info.ppEnabledExtensionNames = enabled_extensions.data();
+
+        info.enabledLayerCount = 0;
+
+        info.pEnabledFeatures = &enabled_features;
+
+        info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
+        info.pQueueCreateInfos    = queue_create_infos.data();
+
+        return info;
+    }
+private:
+    std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
+};
+struct swapchain_desc
+{
+    swapchain_features             features;
+    VkSurfaceKHR                    surface;
+    std::vector<device_queue> device_queues;
+
+    std::optional<VkSurfaceTransformFlagBitsKHR> pre_transform;
+    std::optional<VkCompositeAlphaFlagBitsKHR> composite_alpha;
+    std::optional<VkBool32>                            clipped;
+    std::optional<VkSwapchainKHR>                old_swapchain;
+    std::optional<VkImageUsageFlags>               image_usage;
+    std::optional<uint32_t>                 image_array_layers;
+
+    VkSwapchainCreateInfoKHR get_create_info()
+    {
+        VkSurfaceFormatKHR&       surface_format       =       features.surface_format;
+        VkExtent2D&               extent               =               features.extent;
+        VkPresentModeKHR&         present_mode         =         features.present_mode;
+        VkSurfaceCapabilitiesKHR& surface_capabilities = features.surface_capabilities;
+
+        uint32_t min_image_count = surface_capabilities.minImageCount + 1;
+        if(surface_capabilities.maxImageCount > 0 && min_image_count > surface_capabilities.maxImageCount)
+            min_image_count = surface_capabilities.maxImageCount;
+
+        VkSwapchainCreateInfoKHR create_info{};
+        create_info.sType   =  VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        create_info.surface          =                             surface;
+        create_info.minImageCount    =                     min_image_count;
+        create_info.imageFormat      =               surface_format.format;
+        create_info.imageColorSpace  =           surface_format.colorSpace;
+        create_info.imageExtent      =                              extent;
+        create_info.presentMode      =                        present_mode;
+        create_info.imageArrayLayers =                                 image_array_layers.value_or(1);
+        create_info.imageUsage       =      image_usage.value_or(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+        create_info.preTransform     = pre_transform.value_or(surface_capabilities.currentTransform);
+        create_info.compositeAlpha   =    composite_alpha.value_or(VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
+        create_info.clipped          =                                      clipped.value_or(VK_TRUE);
+        create_info.oldSwapchain     =                         old_swapchain.value_or(VK_NULL_HANDLE);
+
+//HACK Assumption : each device has 1 graphics queue and 1 present queue, which may be the same queue
+        for(const auto& queue : device_queues)
+        {
+            if(queue.flags & GRAPHICS_BIT)
+                sharing_families.insert(queue.family_index);
+            if(queue.flags & PRESENT_BIT)
+                sharing_families.insert(queue.family_index);
+        }
+        if(sharing_families.size() == 1)
+            create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        else
+        {
+            create_info.imageSharingMode      = VK_SHARING_MODE_CONCURRENT;
+            create_info.queueFamilyIndexCount =    sharing_families.size(); //always 2?
+            create_info.pQueueFamilyIndices   = &*sharing_families.begin();
+        }
+        return create_info;
+    }
+private:    //this data needs to stay alive!
+    std::set<uint32_t> sharing_families;
+};
+struct image_view_desc
+{
+    VkFormat format;
+    VkImage   image;
+    std::optional<VkImageViewType>                  view_type;
+    std::optional<VkComponentMapping>       component_mapping;
+    std::optional<VkImageSubresourceRange> subresources_range;
+    std::optional<VkImageViewCreateFlags> flags;
+    VkImageViewCreateInfo get_create_info()
+    {
+        VkImageViewCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        
+        info.viewType = view_type.value_or(VK_IMAGE_VIEW_TYPE_2D);
+
+        VkComponentMapping identity_mapping{};
+        identity_mapping.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        identity_mapping.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        identity_mapping.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        identity_mapping.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+        info.components   = component_mapping.value_or(identity_mapping);
+
+        VkImageSubresourceRange basic_range{};
+
+        basic_range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        basic_range.baseArrayLayer = 0;
+        basic_range.layerCount     = 1;
+        basic_range.baseMipLevel   = 0;
+        basic_range.levelCount     = 1;
+
+        info.subresourceRange = subresources_range.value_or(basic_range);
+
+        info.flags  = flags.value_or(0);
+        
+        info.format = format;
+        info.image  =  image;
+
+        return info;
+    }
+};
+struct subpass_description
+{
+    std::optional<VkPipelineBindPoint> bind_point;
+
+    std::vector<VkAttachmentReference>          color_attachment_refs;
+    std::vector<VkAttachmentReference>          input_attachment_refs;
+    std::optional<VkAttachmentReference> depth_stencil_attachment_ref;
+
+    VkSubpassDescription get_subpass_description() const
+    {
+        VkSubpassDescription subpass_desc{};
+
+        subpass_desc.colorAttachmentCount    =    static_cast<uint32_t>(color_attachment_refs.size());
+        subpass_desc.inputAttachmentCount    =    static_cast<uint32_t>(input_attachment_refs.size());
+
+        subpass_desc.pColorAttachments       = color_attachment_refs.data();
+        subpass_desc.pInputAttachments       = input_attachment_refs.data();
+        subpass_desc.pDepthStencilAttachment = depth_stencil_attachment_ref.has_value() ? &depth_stencil_attachment_ref.value() : nullptr;
+
+        subpass_desc.pipelineBindPoint = bind_point.value_or(VK_PIPELINE_BIND_POINT_GRAPHICS);
+
+        return subpass_desc;
+    }
+};
+struct renderpass_description
+{
+    std::vector<VkAttachmentDescription>      attachments;
+    std::vector<subpass_description> subpass_descriptions;
+    std::vector<VkSubpassDependency> subpass_dependencies;
+    VkRenderPassCreateInfo get_create_info()
+    {
+        VkRenderPassCreateInfo create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+
+        create_info.attachmentCount = static_cast<uint32_t>(attachments.size());
+        create_info.subpassCount    = static_cast<uint32_t>(subpass_descriptions.size());
+        create_info.pAttachments    = attachments.data();
+
+        subpasses = get_subpasses();
+        create_info.pSubpasses = subpasses.data();
+
+        create_info.dependencyCount = static_cast<uint32_t>(subpass_dependencies.size());
+        create_info.pDependencies   = subpass_dependencies.data();
+
+        return create_info;
+    }
+private:
+    std::vector<VkSubpassDescription> subpasses;
+    std::vector<VkSubpassDescription> get_subpasses() const
+    {
+        std::vector<VkSubpassDescription> descriptions;
+        descriptions.reserve(subpass_descriptions.size());
+        for(const auto& subpass : subpass_descriptions)
+            descriptions.push_back(subpass.get_subpass_description());
+        return descriptions;
+    }
+};
+struct shader_module_desc
+{
+    std::vector<char> byte_code;
+    VkShaderModuleCreateInfo get_create_info()
+    {
+        VkShaderModuleCreateInfo create_info{};
+        create_info.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        create_info.pCode    = reinterpret_cast<const uint32_t*>(byte_code.data());
+        create_info.codeSize = static_cast<uint32_t>(byte_code.size());
+        return create_info;
+    }
+};
+
+renderpass_description get_simple_renderpass_description(swapchain_features swp_features)
+{
+    VkAttachmentDescription attachment{};
+    attachment.initialLayout =       VK_IMAGE_LAYOUT_UNDEFINED;
+    attachment.finalLayout   = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    attachment.loadOp        =     VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment.storeOp       =    VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.samples       =           VK_SAMPLE_COUNT_1_BIT;
+    attachment.format        = swp_features.surface_format.format;
+
+    VkAttachmentReference attachment_ref{};
+    attachment_ref.attachment = 0; //index
+    attachment_ref.layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    subpass_description subpass;
+    subpass.color_attachment_refs.push_back(attachment_ref);
+
+    VkSubpassDependency dependency{};
+    dependency.srcSubpass = VK_SUBPASS_EXTERNAL, dependency.dstSubpass = 0;//index
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = 0, dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    renderpass_description description;
+    description.attachments.push_back(attachment);
+    description.subpass_descriptions.push_back(subpass);
+    description.subpass_dependencies.push_back(dependency);
+
+    return description;
+}
 
 class parent : virtual public destroyable
 {
@@ -548,77 +821,129 @@ public:
     parent_t* parent_ptr;
 };
 
-class vk_instance        : public vk_object<VkInstance>              , public parent
+class vk_instance        : public vk_object<VkInstance              , instance_desc>         , public parent
 {
 public:
     virtual ~vk_instance() final {destroy();}
 private:
+    virtual VkResult create_obj(instance_desc desc)
+    {
+        const auto info = desc.get_create_info();
+        return vkCreateInstance(&info, nullptr, &this->handle);
+    }
     virtual void free_obj() override final
     {
         destroy_children();
         vkDestroyInstance(handle, nullptr);
     }
 };
-class vk_debug_messenger : public vk_object<VkDebugUtilsMessengerEXT>, public child<vk_instance>
+class vk_debug_messenger : public vk_object<VkDebugUtilsMessengerEXT, debug_messenger_desc>  , public child<vk_instance>
 {
-    virtual void free_obj() override final{destroy_debug_messenger(parent_ptr->handle, this->handle);}
+    virtual VkResult create_obj(debug_messenger_desc desc) override final
+    {
+        const auto info = desc.get_create_info();
+
+        //fetch function address in runtime 
+        auto fun = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
+        parent_ptr->get_handle(), "vkCreateDebugUtilsMessengerEXT");
+
+        if(fun == nullptr)
+            throw std::runtime_error("Failed to get function pointer : \"vkCreateDebugUtilsMessengerEXT.\"");
+
+        return fun(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
+    virtual void free_obj() override final{destroy_debug_messenger(parent_ptr->get_handle(), this->handle);}
 public:
     vk_debug_messenger(vk_instance* parent) : child<vk_instance>(parent) {}
     virtual ~vk_debug_messenger() final {destroy();}
 };
-class vk_surface         : public vk_object<VkSurfaceKHR>            , public child<vk_instance>
+class vk_surface         : public vk_object<VkSurfaceKHR            , surface_desc>          , public child<vk_instance>
 {
-    virtual void free_obj(){vkDestroySurfaceKHR(parent_ptr->handle, this->handle, nullptr);}
+    virtual VkResult create_obj(surface_desc desc) override final
+    {
+        return desc.glfw_interface.init_vk_surface(parent_ptr->get_handle(), this->handle);
+    }
+    virtual void free_obj(){vkDestroySurfaceKHR(parent_ptr->get_handle(), this->handle, nullptr);}
 public:
     vk_surface(vk_instance* parent) : child<vk_instance>(parent) {}
     virtual ~vk_surface() final {destroy();}
 };
-class vk_device          : public vk_object<VkDevice>                , public parent
+class vk_device          : public vk_object<VkDevice                , device_desc>           , public parent
 {
 public:
-    std::vector<device_queue> device_queues;
     virtual ~vk_device() final {destroy();}
 private:
-    virtual void free_obj() override final
+    virtual VkResult create_obj(device_desc desc) override final
+    {
+        auto info = desc.get_create_info();
+        return vkCreateDevice(desc.phys_device, &info, nullptr, &this->handle);
+    }
+    virtual void     free_obj() override final
     {
         destroy_children();
         vkDestroyDevice(handle, nullptr);
     }
 };
-class vk_swapchain       : public vk_object<VkSwapchainKHR>          , public child<vk_device>
+class vk_swapchain       : public vk_object<VkSwapchainKHR          , swapchain_desc>        , public child<vk_device>
 {
+    virtual VkResult create_obj(swapchain_desc desc) override final
+    {
+        auto info = desc.get_create_info();
+        return vkCreateSwapchainKHR(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
     virtual void free_obj() override final
     {
-        vkDestroySwapchainKHR(parent_ptr->handle, handle, nullptr);
+        vkDestroySwapchainKHR(parent_ptr->get_handle(), handle, nullptr);
     }
 public:
-    swapchain_features features;
     vk_swapchain(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_swapchain() final {destroy();}
 };
-class vk_image_view      : public vk_object<VkImageView>             , public child<vk_device>
+class vk_image_view      : public vk_object<VkImageView             , image_view_desc>       , public child<vk_device>
 {
+    virtual VkResult create_obj(image_view_desc desc) override final
+    {
+        auto info = desc.get_create_info();
+        return vkCreateImageView(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
     virtual void free_obj() override final
     {
-        vkDestroyImageView(parent_ptr->handle, this->handle, nullptr);
+        vkDestroyImageView(parent_ptr->get_handle(), this->handle, nullptr);
     }
 public:
-    image_view_description features;
     vk_image_view(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_image_view() final {destroy();}
 };
-class vk_renderpass      : public vk_object<VkRenderPass>            , public child<vk_device>
+class vk_renderpass      : public vk_object<VkRenderPass            , renderpass_description>, public child<vk_device>
 {
+    virtual VkResult create_obj(renderpass_description desc)
+    {
+        auto info = desc.get_create_info();
+        return vkCreateRenderPass(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    } 
     virtual void free_obj() override final
     {
-        vkDestroyRenderPass(parent_ptr->handle, this->handle, nullptr);
+        vkDestroyRenderPass(parent_ptr->get_handle(), this->handle, nullptr);
     }
 public:
-    renderpass_description description;
     vk_renderpass(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_renderpass() final {destroy();}
 };
-typedef vk_object<VkPhysicalDevice> vk_phys_device;
+class vk_shader_module   : public vk_object<VkShaderModule          , shader_module_desc>    , public child<vk_device>
+{
+    virtual void free_obj() override final
+    {
+        vkDestroyShaderModule(parent_ptr->get_handle(), this->handle, nullptr);
+    }
+    virtual VkResult create_obj(shader_module_desc desc) override final 
+    {
+        const auto info = desc.get_create_info(); 
+        return vkCreateShaderModule(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
+public:
+    vk_shader_module(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_shader_module() final {destroy();}
+};
 
 //only call the vulkan API here
 class vulkan_communication_instance
@@ -630,32 +955,45 @@ public:
         GLFW_INTERFACE.init(init_info.window_parameters);
 
         static vk_instance instance;
-        init_instance(instance.handle ,init_info.app_name);
+        instance.description = get_instance_description(init_info.app_name);
+        if(instance.init())
+            throw std::runtime_error("Failed to create instance");
 
         if(DEBUG_MODE)
         {
             static vk_debug_messenger debug_messenger(&instance);
-            init_validation_layer(instance.handle, debug_messenger.handle);
+            debug_messenger.description.create_info = get_debug_create_info();
+            if(debug_messenger.init())
+            throw std::runtime_error("Failed to create debug messenger");
         }
 
         static vk_surface surface(&instance);
-        init_surface(instance.handle, surface.handle, GLFW_INTERFACE);
+        surface.description.glfw_interface = GLFW_INTERFACE;
+        if(surface.init())
+            throw std::runtime_error("Failed to create surface");
 
-        static vk_phys_device phys_device;
-        init_phys_device(phys_device.handle, instance.handle, surface.handle);
+        static VkPhysicalDevice phys_device;
+        pick_physical_device(phys_device, instance.get_handle(), surface.get_handle());
 
         DESTROY_QUEUE.push_back(&instance);
 
         static vk_device device;
-        device.device_queues = get_device_queues(find_queue_family(phys_device.handle, surface.handle));
-        init_device(phys_device.handle, device.device_queues, device.handle);
+        device.description.device_queues      = get_device_queues(find_queue_family(phys_device, surface.get_handle()));
+        device.description.phys_device        = phys_device;
+        device.description.enabled_extensions = ::get_required_extension_names(phys_device);
+        if(device.init())
+            throw std::runtime_error("Failed to create device");
 
         static vk_swapchain swapchain(&device);
-        swapchain_support swp_support = get_swapchain_support(phys_device.handle, surface.handle);
-        swapchain.features = get_swapchain_features(swp_support, GLFW_INTERFACE);
-        init_swapchain(device.handle, device.device_queues, surface.handle, swapchain.handle, swapchain.features);
+        swapchain_support swp_support = get_swapchain_support(phys_device, surface.get_handle());
+        swapchain_features features   = get_swapchain_features(swp_support, GLFW_INTERFACE);
+        swapchain.description.device_queues = device.description.device_queues;
+        swapchain.description.features      = features;
+        swapchain.description.surface       = surface.get_handle();
+        if(swapchain.init())
+            throw std::runtime_error("Failed to create swapchain");
 
-        auto swapchain_images = get_swapchain_images(swapchain.handle, device.handle);
+        auto swapchain_images = get_swapchain_images(swapchain.get_handle(), device.get_handle());
         static std::vector<vk_image_view> swapchain_image_views; 
         for(size_t i = 0; i < swapchain_images.size(); i++)
         {
@@ -663,18 +1001,28 @@ public:
 
             vk_image_view image_view(&device);
 
-            image_view.features  = image_view_description(swapchain.features);
-            auto result = init_image_view(image, device.handle, image_view.handle, image_view.features);
-            if(result != VK_SUCCESS)
-                throw std::runtime_error("Failed to create image views.");
+            image_view.description.format = swapchain.description.features.surface_format.format;
+            image_view.description.image  = image;
+            if(image_view.init())
+                throw std::runtime_error("Failed to create image view");
 
             swapchain_image_views.push_back(image_view);
         }
 
         static vk_renderpass renderpass(&device);
-        renderpass.description = get_simple_renderpass_description(swapchain.features);
-        if(init_render_pass(device.handle, renderpass.handle, renderpass.description) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create renderpass.");
+        renderpass.description = get_simple_renderpass_description(swapchain.description.features);
+        if(renderpass.init())
+            throw std::runtime_error("Failed to create render pass");
+
+        std::vector<char> fragment_code, vertex_code;
+        read_binary_file({"shaders/"}, "triangle_frag.spv", fragment_code);
+        read_binary_file({"shaders/"}, "triangle_vert.spv", vertex_code);
+
+        static vk_shader_module fragment_module(&device), vertex_module(&device);
+        fragment_module.description.byte_code = fragment_code;
+        vertex_module.description.byte_code   =   vertex_code;
+        if(fragment_module.init() || vertex_module.init())
+            throw std::runtime_error("Failed to create shader modules");
 
         DESTROY_QUEUE.push_back(&device);
     }
@@ -694,50 +1042,6 @@ public:
         GLFW_INTERFACE.terminate();
     }
 private:
-//only call GLFW functions here
-    class GLFW_window_interface
-    {
-    public:
-        void init(window_info window_parameters = window_info())
-        {
-            glfwInit();
-            //we assume this is a vulkan application
-            glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-            glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
-            WINDOW_PTR = glfwCreateWindow(window_parameters.width, window_parameters.height, window_parameters.title, nullptr, nullptr);
-        };
-        void terminate()
-        {
-            glfwDestroyWindow(WINDOW_PTR);
-            glfwTerminate();
-        }
-        static std::vector<const char*> get_glfw_required_extensions()
-        {
-            uint32_t count;
-            const char** data = glfwGetRequiredInstanceExtensions(&count);
-            //Apparently pointers can function like iterators: vector(c_array, c_array + size). nice!
-            std::vector<const char*> extensions(data, data + count);
-            return extensions;
-        }
-        VkResult init_vk_surface(VkInstance instance, VkSurfaceKHR& surface)
-        {
-            return glfwCreateWindowSurface(instance, WINDOW_PTR, nullptr, &surface);
-        }
-        VkExtent2D get_window_extent()
-        {
-            int width, height;
-            glfwGetFramebufferSize(WINDOW_PTR, &width, &height);
-
-            VkExtent2D window_extent;
-            window_extent.height = static_cast<uint32_t>(height);
-            window_extent.width = static_cast<uint32_t>(width);
-
-            return window_extent;
-        }
-    private:
-        GLFWwindow* WINDOW_PTR;
-    };
     static VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFW_window_interface glfw_interface)
     {
         if(surface_capabilities.currentExtent.width != VK_UINT32_MAX) 
@@ -762,7 +1066,7 @@ private:
         VkExtent2D extent = get_extent(swp_support.surface_capabilities, glfw_interface);
         return {surface_format, present_mode, extent, swp_support.surface_capabilities};
     }
-    static vk_extension_info get_required_extension_names(VkInstance instance)
+    static extension_info get_instance_required_extension_names()
     {
         const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
 
@@ -777,25 +1081,55 @@ private:
             required_extension_names.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
 
-        vk_extension_info info{};
+        extension_info info{};
         info.extensions = required_extension_names;
         info.layers     =     required_layer_names;
 
         return info;
     }
-    
-    static void init_instance(VkInstance& instance ,const char* app_name)
+    static instance_desc get_instance_description(const char* app_name)
     {
-        auto create_info = get_debug_create_info();
-        void* ext_ptr = &create_info;
+        instance_desc description{};
+        if(DEBUG_MODE)
+            description.debug_messenger_ext = get_debug_create_info();
+        
+        //check extension support
+        const auto ext_info = get_instance_required_extension_names();
+        //first, check for extension and layer support
+        uint32_t instance_property_count;
+        vkEnumerateInstanceExtensionProperties(nullptr, &instance_property_count,
+        nullptr);
+        VkExtensionProperties instance_properties[instance_property_count];
+        vkEnumerateInstanceExtensionProperties(nullptr, &instance_property_count,
+        instance_properties);
 
-        if(!DEBUG_MODE)
-            ext_ptr = nullptr;
+        const char* instance_extension_names[instance_property_count];
+        for(size_t i = 0; i < instance_property_count; i++)
+            instance_extension_names[i] = instance_properties[i].extensionName;
 
-        init_vk_instance(instance, get_required_extension_names(instance), get_app_info(app_name), ext_ptr);
+        if(!check_support((size_t) instance_property_count, instance_extension_names,
+        ext_info.extensions.data(), ext_info.extensions.size()))
+            throw std::runtime_error("Failed to find required instance extensions");
+        
+        uint32_t instance_layer_count;
+        vkEnumerateInstanceLayerProperties(&instance_layer_count, nullptr);
+        VkLayerProperties instance_layer_properties[instance_layer_count];
+        vkEnumerateInstanceLayerProperties(&instance_layer_count, instance_layer_properties);
+
+        const char* instance_layer_names[instance_layer_count];
+        for(size_t i = 0; i < instance_layer_count; i++)
+            instance_layer_names[i] = instance_layer_properties[i].layerName;
+
+        if(!check_support((size_t) instance_layer_count, instance_layer_names,
+        ext_info.layers.data(), ext_info.layers.size()))
+            throw std::runtime_error("Failed to find required instance layers");
+
+        description.ext_info = ext_info;
+        description.app_info = get_app_info(app_name);
+        
+        return description;
     }
-
-    static void init_phys_device(VkPhysicalDevice& phys_device, VkInstance instance, VkSurfaceKHR surface)
+    static void pick_physical_device(VkPhysicalDevice& phys_device, VkInstance instance, VkSurfaceKHR surface)
     {
         const auto phys_devices = get_physical_devices(instance);
 
@@ -813,60 +1147,7 @@ private:
 //TODO pick the best-performing adequate physical device
         phys_device = candidates[0];
     }
-    
-    static void init_validation_layer(VkInstance instance ,VkDebugUtilsMessengerEXT& debug_messenger)
-    {
-        auto create_info = get_debug_create_info();
 
-        auto fun = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
-        instance, "vkCreateDebugUtilsMessengerEXT");
-
-        if(fun == nullptr)
-            throw std::runtime_error("Failed to get function pointer : \"vkCreateDebugUtilsMessengerEXT.\"");
-        if(fun(instance, &create_info, nullptr, &debug_messenger) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create debug util messenger object.");
-    }
-
-    static void init_surface(VkInstance instance, VkSurfaceKHR& surface, GLFW_window_interface glfw_interface)
-    {
-        if (glfw_interface.init_vk_surface(instance, surface) != VK_SUCCESS)
-            throw std::runtime_error("Failed to initialize vulkan surface");
-    }
-    
-    static void init_device(VkPhysicalDevice phys_device, std::vector<device_queue> device_queues, VkDevice& device)
-    {
-        std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
-
-        const float priority = 1.f;
-        for(const auto& queue : device_queues)
-        {
-            VkDeviceQueueCreateInfo create_info{};
-            create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-            create_info.queueCount = queue.count, create_info.queueFamilyIndex = queue.family_index;
-            create_info.pQueuePriorities = &priority;
-
-            queue_create_infos.push_back(create_info);
-        }
-
-        VkDeviceCreateInfo device_create_info{};
-        device_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-
-        auto extensions = ::get_required_extension_names(phys_device); //call function from global scope
-        device_create_info.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
-        device_create_info.ppEnabledExtensionNames = extensions.data();
-
-        device_create_info.enabledLayerCount = 0;
-
-        device_create_info.queueCreateInfoCount = static_cast<uint32_t>(queue_create_infos.size());
-        device_create_info.pQueueCreateInfos = queue_create_infos.data();
-
-        VkPhysicalDeviceFeatures no_features{};
-        device_create_info.pEnabledFeatures = &no_features;
-
-        if(vkCreateDevice(phys_device, &device_create_info, nullptr, &device) != VK_SUCCESS)
-            throw std::runtime_error("Failed to create device.");
-    }
-   
     static void init_swapchain(VkDevice device, std::vector<device_queue> device_queues, VkSurfaceKHR surface, VkSwapchainKHR& swapchain, swapchain_features features)
     {
         VkSurfaceFormatKHR& surface_format = features.surface_format;
@@ -915,40 +1196,6 @@ private:
             throw std::runtime_error("Failed to create swapchain.");
     }
     
-    static VkResult init_image_view(VkImage image, VkDevice device, VkImageView& image_view, image_view_description description)
-    {
-        VkImageViewCreateInfo create_info{};
-        create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        create_info.image = image;
-
-        create_info.viewType = description.view_type;
-        create_info.format   =    description.format;
-        
-        create_info.components = description.component_mapping;
-
-        create_info.subresourceRange = description.subresources_range;
-
-        return vkCreateImageView(device, &create_info, nullptr, &image_view);
-    }
-
-    static VkResult init_render_pass(VkDevice device, VkRenderPass& renderpass, renderpass_description description)
-    {
-        VkRenderPassCreateInfo create_info{};
-        create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-
-        create_info.attachmentCount = static_cast<uint32_t>(description.attachments.size());
-        create_info.subpassCount    = static_cast<uint32_t>(description.subpass_descriptions.size());
-        create_info.pAttachments    = description.attachments.data();
-
-        std::vector<VkSubpassDescription> subpasses = description.get_subpasses();
-        create_info.pSubpasses = subpasses.data();
-
-        create_info.dependencyCount = static_cast<uint32_t>(description.subpass_dependencies.size());
-        create_info.pDependencies   = description.subpass_dependencies.data();
-
-        return vkCreateRenderPass(device, &create_info, nullptr, &renderpass);
-    }
-
     GLFW_window_interface GLFW_INTERFACE;
 
     std::vector<destroyable*>   DESTROY_QUEUE;
