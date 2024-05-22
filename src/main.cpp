@@ -1383,23 +1383,14 @@ public:
         auto color_blend_attachment = get_color_no_blend_attachment(VK_COLOR_COMPONENT_A_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_R_BIT);
         graphics_pipeline.description.color_blend_info = get_color_no_blend_state_descr({color_blend_attachment});
 
-        dynamic_state_desc dynamic_state;
-        dynamic_state.dynamic_state_list.push_back(VK_DYNAMIC_STATE_VIEWPORT);
-        dynamic_state.dynamic_state_list.push_back(VK_DYNAMIC_STATE_SCISSOR);
-        graphics_pipeline.description.dynamic_state_info = dynamic_state;
-
+        graphics_pipeline.description.dynamic_state_info = dynamic_state_desc({VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR});
         graphics_pipeline.description.vertex_input_info = get_empty_vertex_input_state();
-
         graphics_pipeline.description.input_assembly_info = get_input_assemly_state(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE);
-
         graphics_pipeline.description.multisample_info = get_disabled_multisample_info();
-
         graphics_pipeline.description.rasterization_info = get_simple_rasterization_info(VK_POLYGON_MODE_FILL, 1.f);
-
         graphics_pipeline.description.viewport_state_info = viewport_state_desc({{0.f, 0.f,
         (float)swapchain.description.features.extent.width, (float)swapchain.description.features.extent.height, 0.f, 1.f}}, 
         {{0, 0, swapchain.description.features.extent}});
-        
         graphics_pipeline.description.renderpass = renderpass.get_handle();
         graphics_pipeline.description.subpass_index = 0;
 
