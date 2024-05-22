@@ -1,4 +1,4 @@
-#define GLFW_INCLUDE_VULKAN
+#include"volk.h"
 #include "GLFW/glfw3.h"
 #include "read_file.h"
 
@@ -244,7 +244,7 @@ protected:
     }
     std::vector<destroyable*> children;
 public:
-    virtual ~parent() {children.clear();}
+    virtual ~parent() {destroy_children(); children.clear();}
     void remove_child(destroyable* child)
     {
         auto itr = std::find(children.begin(), children.end(), child);
@@ -405,9 +405,9 @@ enum queue_support_flag_bits
 struct device_queue //Stores family index, count, uses, and priority of a logical device queue 
 {
     uint32_t family_index;
-    uint32_t count;
-    uint32_t flags;
-    float priority;
+    uint32_t        count;
+    uint32_t        flags;
+    float        priority;
 };
 struct device_desc
 {
@@ -1302,12 +1302,17 @@ public:
     //run this once at the start
     void init(vulkan_communication_instance_init_info init_info)
     {
+        if(volkInitialize())
+            throw std::runtime_error("Failed to initialize vulkan");
+
         GLFW_INTERFACE.init(init_info.window_parameters);
 
         static vk_instance instance;
         instance.description = get_instance_description(init_info.app_name);
         if(instance.init())
             throw std::runtime_error("Failed to create instance");
+
+        volkLoadInstance(instance.get_handle());
 
         if(DEBUG_MODE)
         {
