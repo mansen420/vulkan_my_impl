@@ -1454,6 +1454,9 @@ public:
         vkGetDeviceQueue(device.get_handle(),
         find_queue_family(phys_device, surface.get_handle()).graphics_fam_index.value(),
         0, &DRAW_DATA.graphics_queue);
+        vkGetDeviceQueue(device.get_handle(),
+        find_queue_family(phys_device, surface.get_handle()).present_fam_index.value(),
+        0, &DRAW_DATA.present_queue);
 
         DRAW_DATA.cmdbuffer = *cmd_buffers.get_handle();
         DRAW_DATA.device    =       device.get_handle();
@@ -1469,7 +1472,7 @@ public:
             DRAW_DATA.framebuffers[i] = framebuffers[i].get_handle();
         
         DRAW_DATA.renderpass = renderpass.get_handle();
-        DRAW_DATA.graphics_pipeline = graphics_pipeline.get_handle();
+        DRAW_DATA.graphics_pipeline = graphics_pipeline.get_handle();    
     }
 
     //run this inside the render loop
@@ -1519,7 +1522,7 @@ public:
         present_info.waitSemaphoreCount = 1, present_info.pWaitSemaphores = &G.rendering_finished;
         present_info.swapchainCount = 1, present_info.pSwapchains = &G.swapchain, present_info.pImageIndices = &image_index;
         
-        vkQueuePresentKHR(G.graphics_queue, &present_info);
+        vkQueuePresentKHR(G.present_queue, &present_info);
     }
     VkResult record_command_buffer(VkCommandBuffer cmd_buffer, command_buffer_data data)
     {
@@ -1559,8 +1562,8 @@ public:
         vkDeviceWaitIdle(DRAW_DATA.device);
 
         const size_t SIZE = DESTROY_QUEUE.size();
-        for(size_t i = 0; i < SIZE; i++)
-            DESTROY_QUEUE[SIZE-i-1]->destroy();
+            for(size_t i = 0; i < SIZE; i++)
+                DESTROY_QUEUE[SIZE-i-1]->destroy();
 
         GLFW_INTERFACE.terminate();
     }
@@ -1683,13 +1686,14 @@ private:
         VkCommandBuffer               cmdbuffer;
         VkSwapchainKHR                swapchain;
         VkQueue                  graphics_queue;
+        VkQueue                   present_queue;
         VkExtent2D             swapchain_extent;
         VkRenderPass                 renderpass;
         VkPipeline            graphics_pipeline;
         std::vector<VkFramebuffer> framebuffers;
     };
     draw_data DRAW_DATA;
-    
+
     std::vector<destroyable*>   DESTROY_QUEUE;
 };
 
