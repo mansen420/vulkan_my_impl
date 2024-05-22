@@ -204,10 +204,8 @@ protected:
 public:
     description_t description;
 
-    //Throws runtime error if object is empty.
     //Be warned that initializing an object without a well defined description will cause fuck-ups!
     virtual VkResult init(description_t desc) final {this->description = desc; return init();}
-    //Throws runtime error if object is empty.
     //Be warned that initializing an object without a well defined description will cause fuck-ups!
     virtual VkResult init() final
     {
@@ -342,6 +340,14 @@ public:
         window_extent.width = static_cast<uint32_t>(width);
 
         return window_extent;
+    }
+    bool should_close()
+    {
+        return glfwWindowShouldClose(WINDOW_PTR);
+    }
+    void poll_events()
+    {
+        glfwPollEvents();
     }
 private:
     GLFWwindow* WINDOW_PTR;
@@ -637,7 +643,7 @@ struct viewport_state_desc
     
     VkPipelineViewportStateCreateInfo get_info()
     {
-        VkPipelineViewportStateCreateInfo info;
+        VkPipelineViewportStateCreateInfo info{};
 
         this->viewports = viewports;
         this->scissors  = scissors;
@@ -689,7 +695,8 @@ struct dynamic_state_desc
         VkPipelineDynamicStateCreateInfo info{};
 
         info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        info.pDynamicStates = dynamic_state_list.data(), info.dynamicStateCount = static_cast<uint32_t>(dynamic_state_list.size());
+        info.pDynamicStates = dynamic_state_list.data();
+        info.dynamicStateCount = static_cast<uint32_t>(dynamic_state_list.size());
 
         return info;
     };
@@ -717,22 +724,30 @@ struct graphics_pipeline_desc
 
         pipeline_info.pVertexInputState   =   &vertex_input_info;
         pipeline_info.pInputAssemblyState = &input_assembly_info;
-        auto vp = viewport_state_info.get_info();
-        pipeline_info.pViewportState      = &vp;
+
+        viewport_state = viewport_state_info.get_info();
+        pipeline_info.pViewportState = &viewport_state;
+
         pipeline_info.pRasterizationState =  &rasterization_info;
         pipeline_info.pMultisampleState   =    &multisample_info;
         pipeline_info.pDepthStencilState  =  depth_stencil_info.has_value() ? &depth_stencil_info.value() : nullptr;
-        auto clrblnd = color_blend_info.get_info();
-        pipeline_info.pColorBlendState    =    &clrblnd;
-        auto dynmcst = dynamic_state_info.get_info();
-        pipeline_info.pDynamicState       =  &dynmcst;
-        
+
+        color_blend_state = color_blend_info.get_info();
+        pipeline_info.pColorBlendState = &color_blend_state;
+
+        dynamic_state = dynamic_state_info.get_info();
+        pipeline_info.pDynamicState = &dynamic_state;
+
         pipeline_info.layout     = pipeline_layout;
         pipeline_info.renderPass =      renderpass;
         pipeline_info.subpass    =   subpass_index;
 
         return pipeline_info;
     }
+private:
+    VkPipelineViewportStateCreateInfo      viewport_state;
+    VkPipelineColorBlendStateCreateInfo color_blend_state;
+    VkPipelineDynamicStateCreateInfo        dynamic_state;
 };
 struct pipeline_layout_desc
 {
@@ -781,6 +796,41 @@ struct cmd_pool_desc
         info.queueFamilyIndex = queue_fam_index;
         info.flags = flags;
 
+        return info;
+    }
+};
+struct cmd_buffers_desc
+{
+    VkCommandPool cmd_pool = VK_NULL_HANDLE;
+    uint32_t  buffer_count = 0;
+    std::optional<VkCommandBufferLevel> level;
+    VkCommandBufferAllocateInfo get_alloc_info()
+    {
+        VkCommandBufferAllocateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        info.commandPool = cmd_pool;
+        info.commandBufferCount = buffer_count;
+        info.level = level.value_or(VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+        return info;
+    }
+};
+struct semaphore_desc
+{
+    VkSemaphoreCreateInfo get_create_info()
+    {
+        VkSemaphoreCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        return info;
+    }
+};
+struct fence_desc
+{
+    std::optional<VkFenceCreateFlags> flags;
+    VkFenceCreateInfo get_create_info()
+    {
+        VkFenceCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        info.flags = flags.value_or(VK_FENCE_CREATE_SIGNALED_BIT);
         return info;
     }
 };
@@ -1150,7 +1200,7 @@ public:
     vk_framebuffer(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_framebuffer() final {destroy();}
 };
-class vk_cmd_pool          : public vk_object<VkCommandPool           , cmd_pool_desc>         , public child<vk_device>
+class vk_cmd_pool          : public vk_object<VkCommandPool           , cmd_pool_desc>         , public child<vk_device>, public parent
 {
     virtual VkResult create_obj(cmd_pool_desc desc)
     {
@@ -1163,12 +1213,91 @@ class vk_cmd_pool          : public vk_object<VkCommandPool           , cmd_pool
     }
 public:
     vk_cmd_pool(vk_device* parent) : child<vk_device>(parent) {}
-    virtual ~vk_cmd_pool() final {destroy();}
+    virtual ~vk_cmd_pool() final 
+    {
+        destroy_children();
+        destroy();
+    }
+};
+class vk_cmd_buffers       : public vk_object<VkCommandBuffer*        , cmd_buffers_desc>      , public child<vk_device>, public child<vk_cmd_pool>
+{
+    virtual VkResult create_obj(cmd_buffers_desc desc) override final
+    {
+        handle = new VkCommandBuffer[desc.buffer_count];
+        auto info = desc.get_alloc_info();
+        return vkAllocateCommandBuffers(child<vk_device>::parent_ptr->get_handle(), &info, this->handle);
+    }
+    virtual void free_obj() override final
+    {
+        vkFreeCommandBuffers(child<vk_device>::parent_ptr->get_handle(), child<vk_cmd_pool>::parent_ptr->get_handle(),
+        description.buffer_count, this->handle);
+        delete[] handle;
+    }
+public:
+    vk_cmd_buffers(vk_device* parent_device, vk_cmd_pool* parent_cmd_pool) : child<vk_device>(parent_device),
+    child<vk_cmd_pool>(parent_cmd_pool) {}
+    virtual ~vk_cmd_buffers() final {destroy();}
+};
+class vk_semaphore         : public vk_object<VkSemaphore             , semaphore_desc>        , public child<vk_device>
+{
+    virtual VkResult create_obj(semaphore_desc desc) override final
+    {
+        auto info = desc.get_create_info();
+        return vkCreateSemaphore(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
+    virtual void free_obj() override final
+    {
+        vkDestroySemaphore(parent_ptr->get_handle(), this->handle, nullptr);
+    }
+public: 
+    vk_semaphore(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_semaphore() final {destroy();}
+};
+class vk_fence             : public vk_object<VkFence                 , fence_desc>            , public child<vk_device>
+{
+    virtual VkResult create_obj(fence_desc desc) override final
+    {
+        auto info = desc.get_create_info();
+        return vkCreateFence(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+    }
+    virtual void free_obj() override final
+    {
+        vkDestroyFence(parent_ptr->get_handle(), this->handle, nullptr);
+    }
+public: 
+    vk_fence(vk_device* parent) : child<vk_device>(parent) {}
+    virtual ~vk_fence() final {destroy();}
+};
+
+
+class window_interface
+{
+public:
+    window_interface() = delete;
+    bool should_close()
+    {
+        return glfw->should_close();
+    }
+private:
+    window_interface(GLFW_window_interface* glfw_ptr){glfw = glfw_ptr;}
+    GLFW_window_interface* glfw;
+    friend class vulkan_communication_instance;
 };
 
 //only call the vulkan API here
 class vulkan_communication_instance
 {
+    struct command_buffer_data
+    {
+        VkFramebuffer     framebuffer;
+        VkRenderPass       renderpass;
+        VkExtent2D        draw_extent;
+        VkOffset2D        draw_offset;
+        VkClearValue      clear_value;
+        VkViewport   dynamic_viewport;
+        VkRect2D      dynamic_scissor;
+        VkPipeline  graphics_pipeline;
+    };
 public:
     //run this once at the start
     void init(vulkan_communication_instance_init_info init_info)
@@ -1247,27 +1376,45 @@ public:
             throw std::runtime_error("Failed to create shader modules");
 
         static vk_graphics_pipeline graphics_pipeline(&device);
+
         graphics_pipeline.description.shader_stages_info = get_shader_stages({vertex_module.description, fragment_module.description},
         {vertex_module.get_handle(), fragment_module.get_handle()});
-        graphics_pipeline.description.color_blend_info = get_color_no_blend_state_descr({get_color_no_blend_attachment
-        (VK_COLOR_COMPONENT_A_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_R_BIT)});
-        graphics_pipeline.description.dynamic_state_info = dynamic_state_desc({VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR});
+        
+        auto color_blend_attachment = get_color_no_blend_attachment(VK_COLOR_COMPONENT_A_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_R_BIT);
+        graphics_pipeline.description.color_blend_info = get_color_no_blend_state_descr({color_blend_attachment});
+
+        dynamic_state_desc dynamic_state;
+        dynamic_state.dynamic_state_list.push_back(VK_DYNAMIC_STATE_VIEWPORT);
+        dynamic_state.dynamic_state_list.push_back(VK_DYNAMIC_STATE_SCISSOR);
+        graphics_pipeline.description.dynamic_state_info = dynamic_state;
+
+        graphics_pipeline.description.vertex_input_info = get_empty_vertex_input_state();
+
         graphics_pipeline.description.input_assembly_info = get_input_assemly_state(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE);
+
         graphics_pipeline.description.multisample_info = get_disabled_multisample_info();
+
         graphics_pipeline.description.rasterization_info = get_simple_rasterization_info(VK_POLYGON_MODE_FILL, 1.f);
+
         graphics_pipeline.description.viewport_state_info = viewport_state_desc({{0.f, 0.f,
         (float)swapchain.description.features.extent.width, (float)swapchain.description.features.extent.height, 0.f, 1.f}}, 
         {{0, 0, swapchain.description.features.extent}});
         
         graphics_pipeline.description.renderpass = renderpass.get_handle();
         graphics_pipeline.description.subpass_index = 0;
+
         vk_pipeline_layout pipeline_layout(&device);
-        pipeline_layout.init();
+        if(pipeline_layout.init())
+            throw std::runtime_error("Failed to init pipeline layout");
+
         graphics_pipeline.description.pipeline_layout = pipeline_layout.get_handle();
+
+        if(graphics_pipeline.init())
+            throw std::runtime_error("Failed to init graphics pipeline");
 
         static std::vector<vk_framebuffer> framebuffers;
         framebuffers.reserve(swapchain_image_views.size());
-        for(size_t i = 0; i < framebuffers.size(); i++)
+        for(size_t i = 0; i < swapchain_image_views.size(); i++)
         {
             vk_framebuffer framebuffer(&device);
 
@@ -1284,24 +1431,133 @@ public:
             framebuffers.push_back(framebuffer);
         }
 
-        vk_cmd_pool cmd_pool(&device);
+        static vk_cmd_pool cmd_pool(&device);
         cmd_pool.description.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         cmd_pool.description.queue_fam_index = find_queue_family(phys_device, surface.get_handle()).graphics_fam_index.value();
         if (cmd_pool.init())
             throw std::runtime_error("Failed to create command pool");
         
+        static vk_cmd_buffers cmd_buffers(&device, &cmd_pool);
+        cmd_buffers.description.buffer_count = 1;
+        cmd_buffers.description.cmd_pool = cmd_pool.get_handle();
+        if(cmd_buffers.init())
+            throw std::runtime_error("Failed to allocate command buffers");
 
         DESTROY_QUEUE.push_back(&device);
+
+        static vk_fence inflight(&device);
+        inflight.init();
+        
+        static vk_semaphore rendering_finished(&device), swapchain_image_available(&device);
+        rendering_finished.init(), swapchain_image_available.init();
+
+        vkGetDeviceQueue(device.get_handle(),
+        find_queue_family(phys_device, surface.get_handle()).graphics_fam_index.value(),
+        0, &DRAW_DATA.graphics_queue);
+
+        DRAW_DATA.cmdbuffer = *cmd_buffers.get_handle();
+        DRAW_DATA.device    =       device.get_handle();
+        DRAW_DATA.inflight_fence = inflight.get_handle();
+        DRAW_DATA.rendering_finished = rendering_finished.get_handle();
+        DRAW_DATA.swapchain_image_available = swapchain_image_available.get_handle();
+        DRAW_DATA.swapchain = swapchain.get_handle();
+        DRAW_DATA.inflight_fence = inflight.get_handle();
+        DRAW_DATA.swapchain_extent = swapchain.description.features.extent;
+
+        DRAW_DATA.framebuffers.resize(framebuffers.size());
+        for(size_t i = 0; i < framebuffers.size(); i++)
+            DRAW_DATA.framebuffers[i] = framebuffers[i].get_handle();
+        
+        DRAW_DATA.renderpass = renderpass.get_handle();
+        DRAW_DATA.graphics_pipeline = graphics_pipeline.get_handle();
     }
+
     //run this inside the render loop
     void invoke()
     {
+        GLFW_INTERFACE.poll_events();
+        draw();
+    }
+    void draw()
+    {
+        auto& G = DRAW_DATA;
+        vkWaitForFences(G.device, 1, &G.inflight_fence, VK_TRUE, UINT64_MAX);
+        vkResetFences(G.device, 1, &G.inflight_fence);
 
+        uint32_t image_index;
+        vkAcquireNextImageKHR(G.device, G.swapchain, UINT64_MAX, G.swapchain_image_available, VK_NULL_HANDLE,
+        &image_index);
+
+        vkResetCommandBuffer(G.cmdbuffer, 0);
+
+        command_buffer_data data;
+        data.clear_value = {{0.f, 0.f, 0.f, 1.f}};
+        data.draw_extent = G.swapchain_extent;
+        data.draw_offset = {0, 0};
+        data.dynamic_scissor  = VkRect2D{{0, 0}, G.swapchain_extent};
+        data.dynamic_viewport = VkViewport{0.f, 0.f, (float)G.swapchain_extent.width, (float)G.swapchain_extent.height, 0.f, 1.f};
+        data.framebuffer = G.framebuffers[image_index];
+        data.renderpass  = G.renderpass;
+        data.graphics_pipeline = G.graphics_pipeline;
+
+        if(record_command_buffer(G.cmdbuffer, data))
+            throw std::runtime_error("Failed to record");
+
+        VkSubmitInfo submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1, submit_info.pCommandBuffers = &G.cmdbuffer;
+        submit_info.waitSemaphoreCount = 1, submit_info.pWaitSemaphores = &G.swapchain_image_available;
+        auto wait_stage = VkPipelineStageFlags{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+        submit_info.pWaitDstStageMask = &wait_stage; //this is the stage that needs to wait. Other stages can execute
+        submit_info.pSignalSemaphores = &G.rendering_finished, submit_info.signalSemaphoreCount = 1;
+
+        if(vkQueueSubmit(G.graphics_queue, 1, &submit_info, G.inflight_fence))
+            throw std::runtime_error("Failed to submit");
+
+        VkPresentInfoKHR present_info{};
+        present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        present_info.waitSemaphoreCount = 1, present_info.pWaitSemaphores = &G.rendering_finished;
+        present_info.swapchainCount = 1, present_info.pSwapchains = &G.swapchain, present_info.pImageIndices = &image_index;
+        
+        vkQueuePresentKHR(G.graphics_queue, &present_info);
+    }
+    VkResult record_command_buffer(VkCommandBuffer cmd_buffer, command_buffer_data data)
+    {
+        VkCommandBufferBeginInfo cmdbuffer_info{};
+        cmdbuffer_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        auto err = vkBeginCommandBuffer(cmd_buffer, &cmdbuffer_info);
+        if(err)
+            return err;
+        VkRenderPassBeginInfo renderpass_info{};
+        renderpass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        renderpass_info.clearValueCount = 1, renderpass_info.pClearValues = &data.clear_value;
+        renderpass_info.framebuffer = data.framebuffer;
+        renderpass_info.renderArea = VkRect2D{data.draw_offset, data.draw_extent};
+        renderpass_info.renderPass = data.renderpass;
+        
+        vkCmdBeginRenderPass(cmd_buffer, &renderpass_info, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline);
+        vkCmdSetViewport(cmd_buffer, 0, 1, &data.dynamic_viewport);
+        vkCmdSetScissor(cmd_buffer, 0, 1, &data.dynamic_scissor);
+        vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
+        vkCmdEndRenderPass(cmd_buffer);
+
+        err = vkEndCommandBuffer(cmd_buffer);
+
+        return err;
+    }
+    
+    window_interface get_window_interface()
+    {
+        window_interface interface(&GLFW_INTERFACE);
+        return interface;
     }
     //run this once at the end
     //note that a vulkan_communication_layer object can not be restarted after termination
     void terminate()
     {
+        vkDeviceWaitIdle(DRAW_DATA.device);
+
         const size_t SIZE = DESTROY_QUEUE.size();
         for(size_t i = 0; i < SIZE; i++)
             DESTROY_QUEUE[SIZE-i-1]->destroy();
@@ -1418,6 +1674,22 @@ private:
     
     GLFW_window_interface GLFW_INTERFACE;
 
+    struct draw_data
+    {
+        VkFence                  inflight_fence;
+        VkSemaphore   swapchain_image_available;
+        VkSemaphore          rendering_finished;
+        VkDevice                         device;
+        VkCommandBuffer               cmdbuffer;
+        VkSwapchainKHR                swapchain;
+        VkQueue                  graphics_queue;
+        VkExtent2D             swapchain_extent;
+        VkRenderPass                 renderpass;
+        VkPipeline            graphics_pipeline;
+        std::vector<VkFramebuffer> framebuffers;
+    };
+    draw_data DRAW_DATA;
+    
     std::vector<destroyable*>   DESTROY_QUEUE;
 };
 
@@ -1438,6 +1710,12 @@ int main()
     {
         ENG_ERR_LOG << e.what() << std::endl;
         return -1;
+    }
+
+    window_interface window = instance.get_window_interface();
+    while(!window.should_close())
+    {
+        instance.invoke();       
     }
 
     instance.terminate();
