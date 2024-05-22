@@ -13,7 +13,7 @@ target_link_libraries(${executable_name} PRIVATE volk)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     if(MSVC )
-        target_compile_options(&{executable_name} PRIVATE "/W4")
+        target_compile_options(${executable_name} PRIVATE "/W4")
     else()
         target_compile_options(${executable_name} PRIVATE "-Wall")
     endif()
