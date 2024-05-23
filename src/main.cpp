@@ -10,6 +10,7 @@
 #include <type_traits>
 #include <set>
 #include <algorithm>
+#include <array>
 
 /************************************************GLOBALS************************************************/
 
@@ -19,12 +20,15 @@
     const bool DEBUG_MODE = false;
 #else
     const bool DEBUG_MODE = true;
+    #include<typeinfo>
 #endif
 
 constexpr uint32_t VK_UINT32_MAX = 0xFFFFFFFF;
 
 std::ostream& ENG_LOG     = std::cout;
 std::ostream& ENG_ERR_LOG = std::cerr;
+
+template<class T> void ignore( const T& ) {} //ignores variable unused warnings :D
 
 /************************************************PUBLIC STRUCTS************************************************/
 
@@ -55,6 +59,25 @@ struct vulkan_communication_instance_init_info
 VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback_fun(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, 
 VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbackDataEXT* p_callback_data, void* p_user_data)
 {
+    ignore(p_user_data);
+
+    const char* message_type_text;
+    switch (message_type)
+    {
+        case VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT:
+            message_type_text = "VALIDATION";
+            break;
+        case VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT:
+            message_type_text = "GENERAL";
+            break;
+        case VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT:
+            message_type_text = "PERFORMANCE";
+            break;
+        default:
+            message_type_text = "UNDETERMINED TYPE";
+            break;
+    }
+
     const char* message_severity_text;
     switch (message_severity)
     {
@@ -63,16 +86,18 @@ VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbac
         break;
     case VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT:
         message_severity_text = "ERROR";
+        break;
     default:
         message_severity_text = "UNDETERMINED SEVERITY";
         break;
     }
-    ENG_ERR_LOG << "VALIDATION LAYER : " << p_callback_data->pMessage << " (SEVERITY : "<< message_severity_text << ')'
-    << std::endl;
+    ENG_ERR_LOG << "VALIDATION LAYER : " << p_callback_data->pMessage << " (SEVERITY : "<< message_severity_text << ", TYPE : "
+    << message_type_text << ')' << std::endl;
+
     return VK_FALSE;
 }
 
-std::vector<const char*> get_required_extension_names(VkPhysicalDevice device)
+std::vector<const char*> get_physical_device_required_extension_names()
 {
     std::vector<const char*> required_extension_names;
 
@@ -185,7 +210,9 @@ std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice dev
     return swapchain_images;
 }
 
+
 /************************************************BASE CLASSES************************************************/
+
 
 class destroyable
 {
@@ -199,17 +226,17 @@ class vk_object : virtual public destroyable
 {
 protected:
     virtual void free_obj(){}
-    virtual VkResult create_obj(description_t desc){return VK_NOT_READY;}
+    virtual VkResult create_obj(){return VK_NOT_READY;}
     mutable handle_t handle   = VK_NULL_HANDLE;
-public:
     description_t description;
+    const char* type_name = "UNNAMED";
+public:
 
     //Be warned that initializing an object without a well defined description will cause fuck-ups!
-    virtual VkResult init(description_t desc) final {this->description = desc; return init();}
-    //Be warned that initializing an object without a well defined description will cause fuck-ups!
-    virtual VkResult init() final
+    virtual VkResult init(description_t description) final 
     {
-        return create_obj(description);
+        this->description = description; 
+        return create_obj();
     }
     
     virtual void destroy() override final 
@@ -229,6 +256,7 @@ public:
 
     virtual bool     empty()      final {return handle == VK_NULL_HANDLE;}
     virtual handle_t get_handle() const final {return handle;}
+    description_t get_description(){return description;}
 
     virtual ~vk_object(){destroy();}
 };
@@ -241,14 +269,16 @@ protected:
         const size_t SIZE = children.size(); 
         for(size_t i = 0; i < SIZE; i++)
             children[SIZE - i - 1]->destroy();
+        children.clear();
     }
     std::vector<destroyable*> children;
 public:
-    virtual ~parent() {destroy_children(); children.clear();}
+    virtual ~parent() {children.clear();}
     void remove_child(destroyable* child)
     {
         auto itr = std::find(children.begin(), children.end(), child);
-        children.erase(itr);
+        if(itr != children.end())
+            children.erase(itr);
     }
     void add_child(destroyable* child)
     {
@@ -716,6 +746,7 @@ struct graphics_pipeline_desc
     VkPipelineRasterizationStateCreateInfo       rasterization_info;
     VkPipelineMultisampleStateCreateInfo           multisample_info;
     color_blend_desc                               color_blend_info;
+    std::optional<uint32_t> count;
     VkGraphicsPipelineCreateInfo get_create_info()
     {
         VkGraphicsPipelineCreateInfo pipeline_info{};
@@ -1011,7 +1042,7 @@ bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 
     auto avl_names = get_extension_names(phys_device);
     
-    auto req_names = get_required_extension_names(phys_device);
+    auto req_names = get_physical_device_required_extension_names();
     bool extensions_supported = check_support(avl_names, req_names);
 
     swapchain_support device_support = get_swapchain_support(phys_device, surface);
@@ -1026,9 +1057,9 @@ class vk_instance          : public vk_object<VkInstance              , instance
 public:
     virtual ~vk_instance() final {destroy();}
 private:
-    virtual VkResult create_obj(instance_desc desc)
+    virtual VkResult create_obj()
     {
-        const auto info = desc.get_create_info();
+        const auto info = description.get_create_info();
         return vkCreateInstance(&info, nullptr, &this->handle);
     }
     virtual void free_obj() override final
@@ -1039,9 +1070,9 @@ private:
 };
 class vk_debug_messenger   : public vk_object<VkDebugUtilsMessengerEXT, debug_messenger_desc>  , public child<vk_instance>
 {
-    virtual VkResult create_obj(debug_messenger_desc desc) override final
+    virtual VkResult create_obj() override final
     {
-        const auto info = desc.get_create_info();
+        const auto info = description.get_create_info();
 
         //fetch function address in runtime 
         auto fun = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(
@@ -1070,9 +1101,9 @@ public:
 };
 class vk_surface           : public vk_object<VkSurfaceKHR            , surface_desc>          , public child<vk_instance>
 {
-    virtual VkResult create_obj(surface_desc desc) override final
+    virtual VkResult create_obj() override final
     {
-        return desc.glfw_interface.init_vk_surface(parent_ptr->get_handle(), this->handle);
+        return description.glfw_interface.init_vk_surface(parent_ptr->get_handle(), this->handle);
     }
     virtual void free_obj(){vkDestroySurfaceKHR(parent_ptr->get_handle(), this->handle, nullptr);}
 public:
@@ -1084,10 +1115,10 @@ class vk_device            : public vk_object<VkDevice                , device_d
 public:
     virtual ~vk_device() final {destroy();}
 private:
-    virtual VkResult create_obj(device_desc desc) override final
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
-        return vkCreateDevice(desc.phys_device, &info, nullptr, &this->handle);
+        auto info = description.get_create_info();
+        return vkCreateDevice(description.phys_device, &info, nullptr, &this->handle);
     }
     virtual void     free_obj() override final
     {
@@ -1097,9 +1128,9 @@ private:
 };
 class vk_swapchain         : public vk_object<VkSwapchainKHR          , swapchain_desc>        , public child<vk_device>
 {
-    virtual VkResult create_obj(swapchain_desc desc) override final
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
+        auto info = description.get_create_info();
         return vkCreateSwapchainKHR(parent_ptr->get_handle(), &info, nullptr, &this->handle);
     }
     virtual void free_obj() override final
@@ -1112,9 +1143,9 @@ public:
 };
 class vk_image_view        : public vk_object<VkImageView             , image_view_desc>       , public child<vk_device>
 {
-    virtual VkResult create_obj(image_view_desc desc) override final
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
+        auto info = description.get_create_info();
         return vkCreateImageView(parent_ptr->get_handle(), &info, nullptr, &this->handle);
     }
     virtual void free_obj() override final
@@ -1127,9 +1158,9 @@ public:
 };
 class vk_renderpass        : public vk_object<VkRenderPass            , renderpass_desc>       , public child<vk_device>
 {
-    virtual VkResult create_obj(renderpass_desc desc)
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
+        auto info = description.get_create_info();
         return vkCreateRenderPass(parent_ptr->get_handle(), &info, nullptr, &this->handle);
     } 
     virtual void free_obj() override final
@@ -1146,35 +1177,42 @@ class vk_shader_module     : public vk_object<VkShaderModule          , shader_m
     {
         vkDestroyShaderModule(parent_ptr->get_handle(), this->handle, nullptr);
     }
-    virtual VkResult create_obj(shader_module_desc desc) override final 
+    virtual VkResult create_obj() override final 
     {
-        const auto info = desc.get_create_info(); 
+        const auto info = description.get_create_info(); 
         return vkCreateShaderModule(parent_ptr->get_handle(), &info, nullptr, &this->handle);
     }
 public:
     vk_shader_module(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_shader_module() final {destroy();}
 };
-class vk_graphics_pipeline : public vk_object<VkPipeline              , graphics_pipeline_desc>, public child<vk_device>
+class vk_graphics_pipeline : public vk_object<VkPipeline*             , graphics_pipeline_desc>, public child<vk_device>
 {
-    virtual VkResult create_obj(graphics_pipeline_desc desc) override final
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
-        return vkCreateGraphicsPipelines(parent_ptr->get_handle(), desc.pipeline_cache.value_or(VK_NULL_HANDLE), 1, &info, nullptr, &this->handle);
+        handles.resize(description.count.value_or(1));
+        handle = handles.data();
+
+        auto info = description.get_create_info();
+        return vkCreateGraphicsPipelines(parent_ptr->get_handle(), description.pipeline_cache.value_or(VK_NULL_HANDLE),
+        description.count.value_or(1), &info, nullptr, this->handle);
     }
     virtual void free_obj() override final
     {
-        vkDestroyPipeline(parent_ptr->get_handle(), this->handle, nullptr);
+        for(size_t i = 0; i < description.count.value_or(1); i++)
+            vkDestroyPipeline(parent_ptr->get_handle(), handle[i], nullptr);
+        handles.clear();
     }
+    std::vector<VkPipeline> handles;
 public:
     vk_graphics_pipeline(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_graphics_pipeline() final {destroy();}
 };
 class vk_pipeline_layout   : public vk_object<VkPipelineLayout        , pipeline_layout_desc>  , public child<vk_device>
 {
-    virtual VkResult create_obj(pipeline_layout_desc desc)
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
+        auto info = description.get_create_info();
         return vkCreatePipelineLayout(parent_ptr->get_handle(), &info, nullptr, &this->handle);
     }
     virtual void free_obj() override final
@@ -1187,9 +1225,9 @@ public:
 };
 class vk_framebuffer       : public vk_object<VkFramebuffer           , framebuffer_desc>      , public child<vk_device>
 {   
-    virtual VkResult create_obj(framebuffer_desc desc)
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
+        auto info = description.get_create_info();
         return vkCreateFramebuffer(parent_ptr->get_handle(), &info, nullptr, &this->handle);
     }
     virtual void     free_obj() override final
@@ -1202,9 +1240,9 @@ public:
 };
 class vk_cmd_pool          : public vk_object<VkCommandPool           , cmd_pool_desc>         , public child<vk_device>, public parent
 {
-    virtual VkResult create_obj(cmd_pool_desc desc)
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
+        auto info = description.get_create_info();
         return vkCreateCommandPool(parent_ptr->get_handle(), &info, nullptr, &this->handle);
     }
     virtual void free_obj() override final
@@ -1221,18 +1259,20 @@ public:
 };
 class vk_cmd_buffers       : public vk_object<VkCommandBuffer*        , cmd_buffers_desc>      , public child<vk_device>, public child<vk_cmd_pool>
 {
-    virtual VkResult create_obj(cmd_buffers_desc desc) override final
+    virtual VkResult create_obj() override final
     {
-        handle = new VkCommandBuffer[desc.buffer_count];
-        auto info = desc.get_alloc_info();
+        handles.resize(description.buffer_count);
+        handle = handles.data();
+        auto info = description.get_alloc_info();
         return vkAllocateCommandBuffers(child<vk_device>::parent_ptr->get_handle(), &info, this->handle);
     }
     virtual void free_obj() override final
     {
         vkFreeCommandBuffers(child<vk_device>::parent_ptr->get_handle(), child<vk_cmd_pool>::parent_ptr->get_handle(),
         description.buffer_count, this->handle);
-        delete[] handle;
+        handles.clear();
     }
+    std::vector<VkCommandBuffer> handles;
 public:
     vk_cmd_buffers(vk_device* parent_device, vk_cmd_pool* parent_cmd_pool) : child<vk_device>(parent_device),
     child<vk_cmd_pool>(parent_cmd_pool) {}
@@ -1240,9 +1280,9 @@ public:
 };
 class vk_semaphore         : public vk_object<VkSemaphore             , semaphore_desc>        , public child<vk_device>
 {
-    virtual VkResult create_obj(semaphore_desc desc) override final
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
+        auto info = description.get_create_info();
         return vkCreateSemaphore(parent_ptr->get_handle(), &info, nullptr, &this->handle);
     }
     virtual void free_obj() override final
@@ -1255,9 +1295,9 @@ public:
 };
 class vk_fence             : public vk_object<VkFence                 , fence_desc>            , public child<vk_device>
 {
-    virtual VkResult create_obj(fence_desc desc) override final
+    virtual VkResult create_obj() override final
     {
-        auto info = desc.get_create_info();
+        auto info = description.get_create_info();
         return vkCreateFence(parent_ptr->get_handle(), &info, nullptr, &this->handle);
     }
     virtual void free_obj() override final
@@ -1308,8 +1348,7 @@ public:
         GLFW_INTERFACE.init(init_info.window_parameters);
 
         static vk_instance instance;
-        instance.description = get_instance_description(init_info.app_name);
-        if(instance.init())
+        if(instance.init(get_instance_description(init_info.app_name)))
             throw std::runtime_error("Failed to create instance");
 
         volkLoadInstance(instance.get_handle());
@@ -1317,14 +1356,12 @@ public:
         if(DEBUG_MODE)
         {
             static vk_debug_messenger debug_messenger(&instance);
-            debug_messenger.description.create_info = get_debug_create_info();
-            if(debug_messenger.init())
+            if(debug_messenger.init({get_debug_create_info()}))
             throw std::runtime_error("Failed to create debug messenger");
         }
 
         static vk_surface surface(&instance);
-        surface.description.glfw_interface = GLFW_INTERFACE;
-        if(surface.init())
+        if(surface.init({GLFW_INTERFACE}))
             throw std::runtime_error("Failed to create surface");
 
         static VkPhysicalDevice phys_device;
@@ -1333,20 +1370,26 @@ public:
         DESTROY_QUEUE.push_back(&instance);
 
         static vk_device device;
-        device.description.device_queues      = get_device_queues(find_queue_family(phys_device, surface.get_handle()));
-        device.description.phys_device        = phys_device;
-        device.description.enabled_extensions = ::get_required_extension_names(phys_device);
-        if(device.init())
-            throw std::runtime_error("Failed to create device");
+        {
+            device_desc description;
+            description.device_queues      = get_device_queues(find_queue_family(phys_device, surface.get_handle()));
+            description.phys_device        = phys_device;
+            description.enabled_extensions = ::get_physical_device_required_extension_names();
+            if(device.init(description))
+                throw std::runtime_error("Failed to create device");
+        }
 
         static vk_swapchain swapchain(&device);
-        swapchain_support swp_support = get_swapchain_support(phys_device, surface.get_handle());
-        swapchain_features features   = get_swapchain_features(swp_support, GLFW_INTERFACE);
-        swapchain.description.device_queues = device.description.device_queues;
-        swapchain.description.features      = features;
-        swapchain.description.surface       = surface.get_handle();
-        if(swapchain.init())
-            throw std::runtime_error("Failed to create swapchain");
+        {
+            swapchain_support swp_support = get_swapchain_support(phys_device, surface.get_handle());
+            swapchain_features features   = get_swapchain_features(swp_support, GLFW_INTERFACE);
+            swapchain_desc description;
+            description.device_queues = device.get_description().device_queues;
+            description.features      = features;
+            description.surface       = surface.get_handle();
+            if(swapchain.init(description))
+                throw std::runtime_error("Failed to create swapchain");
+        }
 
         auto swapchain_images = get_swapchain_images(swapchain.get_handle(), device.get_handle());
         static std::vector<vk_image_view> swapchain_image_views; 
@@ -1356,17 +1399,17 @@ public:
 
             vk_image_view image_view(&device);
 
-            image_view.description.format = swapchain.description.features.surface_format.format;
-            image_view.description.image  = image;
-            if(image_view.init())
+            image_view_desc description;
+            description.format = swapchain.get_description().features.surface_format.format;
+            description.image  = image;
+            if(image_view.init(description))
                 throw std::runtime_error("Failed to create image view");
 
             swapchain_image_views.push_back(image_view);
         }
 
         static vk_renderpass renderpass(&device);
-        renderpass.description = get_simple_renderpass_description(swapchain.description.features);
-        if(renderpass.init())
+        if(renderpass.init(get_simple_renderpass_description(swapchain.get_description().features)))
             throw std::runtime_error("Failed to create render pass");
 
         std::vector<char> fragment_code, vertex_code;
@@ -1374,39 +1417,44 @@ public:
         read_binary_file({"shaders/"}, "triangle_vert.spv", vertex_code);
 
         vk_shader_module fragment_module(&device), vertex_module(&device);
-        fragment_module.description.byte_code = fragment_code;
-        vertex_module.description.byte_code   =   vertex_code;
-        vertex_module.description.stage = VK_SHADER_STAGE_VERTEX_BIT, fragment_module.description.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        if(fragment_module.init() || vertex_module.init())
-            throw std::runtime_error("Failed to create shader modules");
+        {
+            shader_module_desc v_description, f_description;
+            f_description.byte_code = fragment_code;
+            v_description.byte_code   =   vertex_code;
+            v_description.stage = VK_SHADER_STAGE_VERTEX_BIT, f_description.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+            if(fragment_module.init(f_description) || vertex_module.init(v_description))
+                throw std::runtime_error("Failed to create shader modules");
+        }
 
         static vk_graphics_pipeline graphics_pipeline(&device);
+        {
+            graphics_pipeline_desc description{};
+            description.shader_stages_info = get_shader_stages({vertex_module.get_description(), fragment_module.get_description()},
+            {vertex_module.get_handle(), fragment_module.get_handle()});
+            
+            auto color_blend_attachment = get_color_no_blend_attachment(VK_COLOR_COMPONENT_A_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_R_BIT);
+            description.color_blend_info = get_color_no_blend_state_descr({color_blend_attachment});
 
-        graphics_pipeline.description.shader_stages_info = get_shader_stages({vertex_module.description, fragment_module.description},
-        {vertex_module.get_handle(), fragment_module.get_handle()});
-        
-        auto color_blend_attachment = get_color_no_blend_attachment(VK_COLOR_COMPONENT_A_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_R_BIT);
-        graphics_pipeline.description.color_blend_info = get_color_no_blend_state_descr({color_blend_attachment});
+            description.dynamic_state_info = dynamic_state_desc({VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR});
+            description.vertex_input_info = get_empty_vertex_input_state();
+            description.input_assembly_info = get_input_assemly_state(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE);
+            description.multisample_info = get_disabled_multisample_info();
+            description.rasterization_info = get_simple_rasterization_info(VK_POLYGON_MODE_FILL, 1.f);
+            description.viewport_state_info = viewport_state_desc({{0.f, 0.f,
+            (float)swapchain.get_description().features.extent.width, (float)swapchain.get_description().features.extent.height, 0.f, 1.f}}, 
+            {{0, 0, swapchain.get_description().features.extent}});
+            description.renderpass = renderpass.get_handle();
+            description.subpass_index = 0;
 
-        graphics_pipeline.description.dynamic_state_info = dynamic_state_desc({VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR});
-        graphics_pipeline.description.vertex_input_info = get_empty_vertex_input_state();
-        graphics_pipeline.description.input_assembly_info = get_input_assemly_state(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE);
-        graphics_pipeline.description.multisample_info = get_disabled_multisample_info();
-        graphics_pipeline.description.rasterization_info = get_simple_rasterization_info(VK_POLYGON_MODE_FILL, 1.f);
-        graphics_pipeline.description.viewport_state_info = viewport_state_desc({{0.f, 0.f,
-        (float)swapchain.description.features.extent.width, (float)swapchain.description.features.extent.height, 0.f, 1.f}}, 
-        {{0, 0, swapchain.description.features.extent}});
-        graphics_pipeline.description.renderpass = renderpass.get_handle();
-        graphics_pipeline.description.subpass_index = 0;
+            vk_pipeline_layout pipeline_layout(&device);
+            if(pipeline_layout.init(pipeline_layout_desc{}))
+                throw std::runtime_error("Failed to init pipeline layout");
 
-        vk_pipeline_layout pipeline_layout(&device);
-        if(pipeline_layout.init())
-            throw std::runtime_error("Failed to init pipeline layout");
+            description.pipeline_layout = pipeline_layout.get_handle();
 
-        graphics_pipeline.description.pipeline_layout = pipeline_layout.get_handle();
-
-        if(graphics_pipeline.init())
-            throw std::runtime_error("Failed to init graphics pipeline");
+            if(graphics_pipeline.init(description))
+                throw std::runtime_error("Failed to init graphics pipeline");
+        }
 
         static std::vector<vk_framebuffer> framebuffers;
         framebuffers.reserve(swapchain_image_views.size());
@@ -1416,36 +1464,44 @@ public:
 
             const auto& image_view = swapchain_image_views[i];
 
-            framebuffer.description.attachments = {image_view.get_handle()};
-            framebuffer.description.height = swapchain.description.features.extent.height;
-            framebuffer.description.width  =  swapchain.description.features.extent.width;
-            framebuffer.description.renderpass  = renderpass.get_handle();
+            framebuffer_desc description{};
 
-            if(framebuffer.init())
+            description.attachments = {image_view.get_handle()};
+            description.height = swapchain.get_description().features.extent.height;
+            description.width  =  swapchain.get_description().features.extent.width;
+            description.renderpass  = renderpass.get_handle();
+
+            if(framebuffer.init(description))
                 throw std::runtime_error("Failed to create framebuffer");
 
             framebuffers.push_back(framebuffer);
         }
 
         static vk_cmd_pool cmd_pool(&device);
-        cmd_pool.description.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        cmd_pool.description.queue_fam_index = find_queue_family(phys_device, surface.get_handle()).graphics_fam_index.value();
-        if (cmd_pool.init())
-            throw std::runtime_error("Failed to create command pool");
-        
+        {
+            cmd_pool_desc description;
+            description.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+            description.queue_fam_index = find_queue_family(phys_device, surface.get_handle()).graphics_fam_index.value();
+            if (cmd_pool.init(description))
+                throw std::runtime_error("Failed to create command pool");    
+        }
+
         static vk_cmd_buffers cmd_buffers(&device, &cmd_pool);
-        cmd_buffers.description.buffer_count = 1;
-        cmd_buffers.description.cmd_pool = cmd_pool.get_handle();
-        if(cmd_buffers.init())
-            throw std::runtime_error("Failed to allocate command buffers");
+        {
+            cmd_buffers_desc description{};
+            description.buffer_count = 1;
+            description.cmd_pool = cmd_pool.get_handle();
+            if(cmd_buffers.init(description))
+                throw std::runtime_error("Failed to allocate command buffers");
+        }
 
         DESTROY_QUEUE.push_back(&device);
 
         static vk_fence inflight(&device);
-        inflight.init();
+        inflight.init(fence_desc{});
         
         static vk_semaphore rendering_finished(&device), swapchain_image_available(&device);
-        rendering_finished.init(), swapchain_image_available.init();
+        rendering_finished.init(semaphore_desc{}), swapchain_image_available.init(semaphore_desc{});
 
         vkGetDeviceQueue(device.get_handle(),
         find_queue_family(phys_device, surface.get_handle()).graphics_fam_index.value(),
@@ -1454,21 +1510,21 @@ public:
         find_queue_family(phys_device, surface.get_handle()).present_fam_index.value(),
         0, &DRAW_DATA.present_queue);
 
-        DRAW_DATA.cmdbuffer = *cmd_buffers.get_handle();
+        DRAW_DATA.cmdbuffer = cmd_buffers.get_handle()[0];
         DRAW_DATA.device    =       device.get_handle();
         DRAW_DATA.inflight_fence = inflight.get_handle();
         DRAW_DATA.rendering_finished = rendering_finished.get_handle();
         DRAW_DATA.swapchain_image_available = swapchain_image_available.get_handle();
         DRAW_DATA.swapchain = swapchain.get_handle();
         DRAW_DATA.inflight_fence = inflight.get_handle();
-        DRAW_DATA.swapchain_extent = swapchain.description.features.extent;
+        DRAW_DATA.swapchain_extent = swapchain.get_description().features.extent;
 
         DRAW_DATA.framebuffers.resize(framebuffers.size());
         for(size_t i = 0; i < framebuffers.size(); i++)
             DRAW_DATA.framebuffers[i] = framebuffers[i].get_handle();
         
         DRAW_DATA.renderpass = renderpass.get_handle();
-        DRAW_DATA.graphics_pipeline = graphics_pipeline.get_handle();    
+        DRAW_DATA.graphics_pipeline = graphics_pipeline.get_handle()[0];    
     }
 
     //run this inside the render loop
@@ -1558,9 +1614,9 @@ public:
         vkDeviceWaitIdle(DRAW_DATA.device);
 
         const size_t SIZE = DESTROY_QUEUE.size();
-            for(size_t i = 0; i < SIZE; i++)
-                DESTROY_QUEUE[SIZE-i-1]->destroy();
-
+        for(size_t i = 0; i < SIZE; i++)
+            DESTROY_QUEUE[SIZE-i-1]->destroy();
+        
         GLFW_INTERFACE.terminate();
     }
 private:
@@ -1622,15 +1678,15 @@ private:
         uint32_t instance_property_count;
         vkEnumerateInstanceExtensionProperties(nullptr, &instance_property_count,
         nullptr);
-        VkExtensionProperties instance_properties[instance_property_count];
+        std::vector<VkExtensionProperties> instance_properties(instance_property_count);
         vkEnumerateInstanceExtensionProperties(nullptr, &instance_property_count,
-        instance_properties);
+        instance_properties.data());
 
-        const char* instance_extension_names[instance_property_count];
+        std::vector<const char*> instance_extension_names(instance_property_count);
         for(size_t i = 0; i < instance_property_count; i++)
             instance_extension_names[i] = instance_properties[i].extensionName;
 
-        if(!check_support((size_t) instance_property_count, instance_extension_names,
+        if(!check_support((size_t) instance_property_count, instance_extension_names.data(),
         ext_info.extensions.data(), ext_info.extensions.size()))
             throw std::runtime_error("Failed to find required instance extensions");
         
