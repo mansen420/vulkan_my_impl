@@ -11,6 +11,7 @@
 #include <set>
 #include <algorithm>
 #include <array>
+#include <memory>
 
 /************************************************GLOBALS************************************************/
 
@@ -220,45 +221,94 @@ public:
     virtual void destroy() = 0;
 };
 
+
 //Be warned that vk_objects transfer ownership of the underlying vulkan object through the copy constructor
 template <class handle_t, class description_t> 
 class vk_object : virtual public destroyable
 {
 protected:
-    virtual void free_obj(){}
-    virtual VkResult create_obj(){return VK_NOT_READY;}
-    mutable handle_t handle   = VK_NULL_HANDLE;
+    //Guarantees by the time the execution reaches this function :
+    //1. vk_object is not empty(), i.e. has a valid vulkan handle
+    //2. shared_handle_ptr is unique(), i.e. last owner of said handle
+    virtual void free_obj() = 0;
+    //Guarantees by the time execution reaches this function :
+    //1. object was empty prior to the call to init()
+    //2. shared_handle_ptr is pointing to a new uninitialized handle
+    virtual VkResult create_obj() = 0;
     description_t description;
-    const char* type_name = "UNNAMED";
+    std::shared_ptr<handle_t> shared_handle_ptr;
 public:
 
     //Be warned that initializing an object without a well defined description will cause fuck-ups!
+    //Assumes that the object is not initialized. You can not re-init an object without destroy()ing it first.
+    //Returns VK_SUCCESS if the object is already initialized.
     virtual VkResult init(description_t description) final 
     {
-        this->description = description; 
-        return create_obj();
+        if(!shared_handle_ptr)
+        {
+            this->description = description;
+
+            shared_handle_ptr = std::make_shared<handle_t>();
+
+            auto res = create_obj();
+            if(res != VK_SUCCESS)
+                shared_handle_ptr.reset();
+
+            return res;
+        }
+        else
+        {
+            return VK_SUCCESS;
+        }
     }
     
-    virtual void destroy() override final 
+    //Will do nothing if object is empty().
+    //Otherwise this object will be removed from the list of owners, and its description will be reset to the default value.
+    //The last owner will also destroy the underlying vulkan object.
+    virtual void destroy() override final
     {
         if(empty())
+        {
             return;
-        free_obj();
-        handle = VK_NULL_HANDLE;
+        }
+
+        if(shared_handle_ptr.unique())
+        {
+            free_obj();
+
+        }
+        description = description_t{};
+        shared_handle_ptr.reset();
     };
-    
+
     vk_object(const vk_object& copy)
     {
-        this->handle =    copy.handle;
-        copy.handle  = VK_NULL_HANDLE;
+        //AFAIK this should guarantee that the underlying vulkan object is valid
+        if(copy.empty())    //don't copy empty object, they can't share anything
+            return;
+        this->destroy();    //if this object is not instantiated this does nothing
+
+        this->shared_handle_ptr = copy.shared_handle_ptr; //now they share the underlying vulkan object
+
+        this->description = copy.description;
     }
     vk_object(){}
-
-    virtual bool     empty()      final {return handle == VK_NULL_HANDLE;}
-    virtual handle_t get_handle() const final {return handle;}
+    
+    //Returns true if object has an instantiated (non nullptr) handle
+    virtual bool empty() const final {return shared_handle_ptr.get() == nullptr;}
+    //If the vk_object is empty() this will return VK_NULL_HANDLE
+    virtual handle_t get_handle() const final 
+    {
+        if(empty())
+            return VK_NULL_HANDLE;
+        return *shared_handle_ptr.get();
+    }
+    //description is always the latest description_t struct passed to init(), otherwise a default constructed one
     description_t get_description(){return description;}
 
-    virtual ~vk_object(){destroy();}
+    virtual ~vk_object()
+    {
+    }
 };
 
 class parent : virtual public destroyable
@@ -273,7 +323,7 @@ protected:
     }
     std::vector<destroyable*> children;
 public:
-    virtual ~parent() {children.clear();}
+    virtual ~parent() {destroy_children();}
     void remove_child(destroyable* child)
     {
         auto itr = std::find(children.begin(), children.end(), child);
@@ -289,8 +339,9 @@ public:
 template <class parent_t, std::enable_if_t<std::is_base_of<parent, parent_t>::value && !std::is_same<parent_t, parent>::value, int> = 0 >
 class child : virtual public destroyable
 {
+protected:
+    parent_t* parent_ptr = nullptr;
 public:
-    child() = delete;
     child& operator= (const child& rhs)
     {
         if(this == &rhs)
@@ -314,16 +365,39 @@ public:
     
     child(parent_t* parent_ptr) 
     {
-        this->parent_ptr = parent_ptr;
+        set_parent(parent_ptr);
+    }
+    child(){}
+    void set_parent(parent_t* parent_ptr)
+    {
+        if(detached())
+        {
+            this->parent_ptr = parent_ptr;
+            parent* p = (parent*)parent_ptr;
+            p->add_child(this);
+        }
+    }
+
+    bool detached(){return parent_ptr == nullptr;}
+    
+    //make sure you dont reference the parent's pointer after detaching!
+    void detach_from_parent()
+    {
+        if(detached())
+        {
+            return;
+        }
+
         parent* p = (parent*)parent_ptr;
-        p->add_child(this);
+        p->remove_child(this);
+
+        parent_ptr = nullptr;
     }
     virtual ~child()
     {
-        parent* p = (parent*)parent_ptr;
-        p->remove_child(this);
+        detach_from_parent();
     }
-    parent_t* parent_ptr;
+    
 };
 
 
@@ -339,10 +413,9 @@ public:
         glfwInit();
         //we assume this is a vulkan application
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
         WINDOW_PTR = glfwCreateWindow(window_parameters.width, window_parameters.height, window_parameters.title, nullptr, nullptr);
-    };
+    }
+    
     void terminate()
     {
         glfwDestroyWindow(WINDOW_PTR);
@@ -379,7 +452,7 @@ public:
     {
         glfwPollEvents();
     }
-private:
+    //public now. This class will removed soon
     GLFWwindow* WINDOW_PTR;
 };
 
@@ -427,7 +500,7 @@ struct surface_desc
 {
     GLFW_window_interface glfw_interface;
 };
-enum queue_support_flag_bits
+enum   queue_support_flag_bits
 {
     GRAPHICS_BIT = 0b0001,
     PRESENT_BIT  = 0b0010
@@ -1057,15 +1130,15 @@ class vk_instance          : public vk_object<VkInstance              , instance
 public:
     virtual ~vk_instance() final {destroy();}
 private:
-    virtual VkResult create_obj()
+    virtual VkResult create_obj() override final
     {
         const auto info = description.get_create_info();
-        return vkCreateInstance(&info, nullptr, &this->handle);
+        return vkCreateInstance(&info, nullptr, shared_handle_ptr.get());
     }
     virtual void free_obj() override final
     {
         destroy_children();
-        vkDestroyInstance(handle, nullptr);
+        vkDestroyInstance(get_handle(), nullptr);
     }
 };
 class vk_debug_messenger   : public vk_object<VkDebugUtilsMessengerEXT, debug_messenger_desc>  , public child<vk_instance>
@@ -1081,7 +1154,7 @@ class vk_debug_messenger   : public vk_object<VkDebugUtilsMessengerEXT, debug_me
         if(fun == nullptr)
             throw std::runtime_error("Failed to get function pointer : \"vkCreateDebugUtilsMessengerEXT.\"");
 
-        return fun(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return fun(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
     void destroy_debug_messenger(VkInstance instance, VkDebugUtilsMessengerEXT debug_messenger)
     {
@@ -1094,8 +1167,13 @@ class vk_debug_messenger   : public vk_object<VkDebugUtilsMessengerEXT, debug_me
         else
             throw std::runtime_error("Failed to find function pointer \"vkDestroyDebugUtilsMessengerEXT.\"");
     }
-    virtual void free_obj() override final{destroy_debug_messenger(parent_ptr->get_handle(), this->handle);}
+    virtual void free_obj() override final
+    {
+        destroy_debug_messenger(parent_ptr->get_handle(), this->get_handle());
+        detach_from_parent();
+    }
 public:
+    vk_debug_messenger(){}
     vk_debug_messenger(vk_instance* parent) : child<vk_instance>(parent) {}
     virtual ~vk_debug_messenger() final {destroy();}
 };
@@ -1103,10 +1181,14 @@ class vk_surface           : public vk_object<VkSurfaceKHR            , surface_
 {
     virtual VkResult create_obj() override final
     {
-        return description.glfw_interface.init_vk_surface(parent_ptr->get_handle(), this->handle);
+        return description.glfw_interface.init_vk_surface(parent_ptr->get_handle(), *shared_handle_ptr.get());
     }
-    virtual void free_obj(){vkDestroySurfaceKHR(parent_ptr->get_handle(), this->handle, nullptr);}
+    virtual void free_obj()
+    {
+        vkDestroySurfaceKHR(parent_ptr->get_handle(), this->get_handle(), nullptr);
+    }
 public:
+    vk_surface(){}
     vk_surface(vk_instance* parent) : child<vk_instance>(parent) {}
     virtual ~vk_surface() final {destroy();}
 };
@@ -1118,12 +1200,12 @@ private:
     virtual VkResult create_obj() override final
     {
         auto info = description.get_create_info();
-        return vkCreateDevice(description.phys_device, &info, nullptr, &this->handle);
+        return vkCreateDevice(description.phys_device, &info, nullptr, shared_handle_ptr.get());
     }
     virtual void     free_obj() override final
     {
         destroy_children();
-        vkDestroyDevice(handle, nullptr);
+        vkDestroyDevice(this->get_handle(), nullptr);
     }
 };
 class vk_swapchain         : public vk_object<VkSwapchainKHR          , swapchain_desc>        , public child<vk_device>
@@ -1131,13 +1213,14 @@ class vk_swapchain         : public vk_object<VkSwapchainKHR          , swapchai
     virtual VkResult create_obj() override final
     {
         auto info = description.get_create_info();
-        return vkCreateSwapchainKHR(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return vkCreateSwapchainKHR(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
     virtual void free_obj() override final
     {
-        vkDestroySwapchainKHR(parent_ptr->get_handle(), handle, nullptr);
+        vkDestroySwapchainKHR(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public:
+    vk_swapchain(){}
     vk_swapchain(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_swapchain() final {destroy();}
 };
@@ -1146,13 +1229,14 @@ class vk_image_view        : public vk_object<VkImageView             , image_vi
     virtual VkResult create_obj() override final
     {
         auto info = description.get_create_info();
-        return vkCreateImageView(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return vkCreateImageView(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
     virtual void free_obj() override final
     {
-        vkDestroyImageView(parent_ptr->get_handle(), this->handle, nullptr);
+        vkDestroyImageView(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public:
+    vk_image_view(){}
     vk_image_view(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_image_view() final {destroy();}
 };
@@ -1161,11 +1245,11 @@ class vk_renderpass        : public vk_object<VkRenderPass            , renderpa
     virtual VkResult create_obj() override final
     {
         auto info = description.get_create_info();
-        return vkCreateRenderPass(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return vkCreateRenderPass(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     } 
     virtual void free_obj() override final
     {
-        vkDestroyRenderPass(parent_ptr->get_handle(), this->handle, nullptr);
+        vkDestroyRenderPass(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public:
     vk_renderpass(vk_device* parent) : child<vk_device>(parent) {}
@@ -1175,12 +1259,12 @@ class vk_shader_module     : public vk_object<VkShaderModule          , shader_m
 {
     virtual void free_obj() override final
     {
-        vkDestroyShaderModule(parent_ptr->get_handle(), this->handle, nullptr);
+        vkDestroyShaderModule(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
     virtual VkResult create_obj() override final 
     {
         const auto info = description.get_create_info(); 
-        return vkCreateShaderModule(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return vkCreateShaderModule(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
 public:
     vk_shader_module(vk_device* parent) : child<vk_device>(parent) {}
@@ -1191,16 +1275,16 @@ class vk_graphics_pipeline : public vk_object<VkPipeline*             , graphics
     virtual VkResult create_obj() override final
     {
         handles.resize(description.count.value_or(1));
-        handle = handles.data();
+        *shared_handle_ptr.get() = handles.data();
 
         auto info = description.get_create_info();
         return vkCreateGraphicsPipelines(parent_ptr->get_handle(), description.pipeline_cache.value_or(VK_NULL_HANDLE),
-        description.count.value_or(1), &info, nullptr, this->handle);
+        description.count.value_or(1), &info, nullptr, *shared_handle_ptr.get());
     }
     virtual void free_obj() override final
     {
         for(size_t i = 0; i < description.count.value_or(1); i++)
-            vkDestroyPipeline(parent_ptr->get_handle(), handle[i], nullptr);
+            vkDestroyPipeline(parent_ptr->get_handle(), handles[i], nullptr);
         handles.clear();
     }
     std::vector<VkPipeline> handles;
@@ -1213,11 +1297,11 @@ class vk_pipeline_layout   : public vk_object<VkPipelineLayout        , pipeline
     virtual VkResult create_obj() override final
     {
         auto info = description.get_create_info();
-        return vkCreatePipelineLayout(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return vkCreatePipelineLayout(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
     virtual void free_obj() override final
     {
-        vkDestroyPipelineLayout(parent_ptr->get_handle(), this->handle,  nullptr);
+        vkDestroyPipelineLayout(parent_ptr->get_handle(), this->get_handle(),  nullptr);
     }
 public:
     vk_pipeline_layout(vk_device* parent) : child<vk_device>(parent) {}
@@ -1228,11 +1312,11 @@ class vk_framebuffer       : public vk_object<VkFramebuffer           , framebuf
     virtual VkResult create_obj() override final
     {
         auto info = description.get_create_info();
-        return vkCreateFramebuffer(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return vkCreateFramebuffer(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
     virtual void     free_obj() override final
     {
-        vkDestroyFramebuffer(parent_ptr->get_handle(), this->handle, nullptr);
+        vkDestroyFramebuffer(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public:
     vk_framebuffer(vk_device* parent) : child<vk_device>(parent) {}
@@ -1243,11 +1327,11 @@ class vk_cmd_pool          : public vk_object<VkCommandPool           , cmd_pool
     virtual VkResult create_obj() override final
     {
         auto info = description.get_create_info();
-        return vkCreateCommandPool(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return vkCreateCommandPool(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
     virtual void free_obj() override final
     {
-        vkDestroyCommandPool(parent_ptr->get_handle(), this->handle, nullptr);
+        vkDestroyCommandPool(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public:
     vk_cmd_pool(vk_device* parent) : child<vk_device>(parent) {}
@@ -1262,14 +1346,14 @@ class vk_cmd_buffers       : public vk_object<VkCommandBuffer*        , cmd_buff
     virtual VkResult create_obj() override final
     {
         handles.resize(description.buffer_count);
-        handle = handles.data();
+        *shared_handle_ptr.get() = handles.data();
         auto info = description.get_alloc_info();
-        return vkAllocateCommandBuffers(child<vk_device>::parent_ptr->get_handle(), &info, this->handle);
+        return vkAllocateCommandBuffers(child<vk_device>::parent_ptr->get_handle(), &info, *shared_handle_ptr.get());
     }
     virtual void free_obj() override final
     {
         vkFreeCommandBuffers(child<vk_device>::parent_ptr->get_handle(), child<vk_cmd_pool>::parent_ptr->get_handle(),
-        description.buffer_count, this->handle);
+        description.buffer_count, this->get_handle());
         handles.clear();
     }
     std::vector<VkCommandBuffer> handles;
@@ -1283,11 +1367,11 @@ class vk_semaphore         : public vk_object<VkSemaphore             , semaphor
     virtual VkResult create_obj() override final
     {
         auto info = description.get_create_info();
-        return vkCreateSemaphore(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return vkCreateSemaphore(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
     virtual void free_obj() override final
     {
-        vkDestroySemaphore(parent_ptr->get_handle(), this->handle, nullptr);
+        vkDestroySemaphore(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public: 
     vk_semaphore(vk_device* parent) : child<vk_device>(parent) {}
@@ -1298,11 +1382,11 @@ class vk_fence             : public vk_object<VkFence                 , fence_de
     virtual VkResult create_obj() override final
     {
         auto info = description.get_create_info();
-        return vkCreateFence(parent_ptr->get_handle(), &info, nullptr, &this->handle);
+        return vkCreateFence(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
     virtual void free_obj() override final
     {
-        vkDestroyFence(parent_ptr->get_handle(), this->handle, nullptr);
+        vkDestroyFence(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public: 
     vk_fence(vk_device* parent) : child<vk_device>(parent) {}
@@ -1321,12 +1405,21 @@ public:
 private:
     window_interface(GLFW_window_interface* glfw_ptr){glfw = glfw_ptr;}
     GLFW_window_interface* glfw;
-    friend class vulkan_communication_instance;
+    friend class vulkan_glfw_interface;
 };
 
 //only call the vulkan API here
-class vulkan_communication_instance
+class vulkan_glfw_interface
 {
+    bool framebuffer_resized = false;
+    static void framebuffer_resize_callback(GLFWwindow* window ,int width, int height)
+    {
+        ignore(width);
+        ignore(height);
+        auto ptr = reinterpret_cast<vulkan_glfw_interface*>(glfwGetWindowUserPointer(window));
+        ptr->framebuffer_resized = true; //we dont need the new width and height since we query them from GLFW anyway
+    }
+    
     struct command_buffer_data
     {
         VkFramebuffer     framebuffer;
@@ -1338,6 +1431,7 @@ class vulkan_communication_instance
         VkRect2D      dynamic_scissor;
         VkPipeline  graphics_pipeline;
     };
+
 public:
     //run this once at the start
     void init(vulkan_communication_instance_init_info init_info)
@@ -1346,6 +1440,8 @@ public:
             throw std::runtime_error("Failed to initialize vulkan");
 
         GLFW_INTERFACE.init(init_info.window_parameters);
+        glfwSetWindowUserPointer(GLFW_INTERFACE.WINDOW_PTR, this);
+        glfwSetFramebufferSizeCallback(GLFW_INTERFACE.WINDOW_PTR, framebuffer_resize_callback);
 
         static vk_instance instance;
         if(instance.init(get_instance_description(init_info.app_name)))
@@ -1392,7 +1488,8 @@ public:
         }
 
         auto swapchain_images = get_swapchain_images(swapchain.get_handle(), device.get_handle());
-        static std::vector<vk_image_view> swapchain_image_views; 
+        static std::vector<vk_image_view> swapchain_image_views;
+        swapchain_image_views.reserve(swapchain_images.size());
         for(size_t i = 0; i < swapchain_images.size(); i++)
         {
             auto& image = swapchain_images[i];
@@ -1407,7 +1504,7 @@ public:
 
             swapchain_image_views.push_back(image_view);
         }
-
+ENG_ERR_LOG << "SIZE : " << swapchain_image_views.size() << std::endl;
         static vk_renderpass renderpass(&device);
         if(renderpass.init(get_simple_renderpass_description(swapchain.get_description().features)))
             throw std::runtime_error("Failed to create render pass");
@@ -1486,45 +1583,64 @@ public:
                 throw std::runtime_error("Failed to create command pool");    
         }
 
+
+        DESTROY_QUEUE.push_back(&device);
+
+        MAX_FRAMES_IN_FLIGHT = 2;
+
         static vk_cmd_buffers cmd_buffers(&device, &cmd_pool);
         {
             cmd_buffers_desc description{};
-            description.buffer_count = 1;
+            description.buffer_count = MAX_FRAMES_IN_FLIGHT;
             description.cmd_pool = cmd_pool.get_handle();
             if(cmd_buffers.init(description))
                 throw std::runtime_error("Failed to allocate command buffers");
         }
+        static std::vector<vk_fence> inflight{};
+        static std::vector<vk_semaphore> rendering_finished{}, swapchain_image_available{};
+        inflight.reserve(MAX_FRAMES_IN_FLIGHT), rendering_finished.reserve(MAX_FRAMES_IN_FLIGHT), swapchain_image_available.reserve(MAX_FRAMES_IN_FLIGHT);
+        for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            vk_fence fnc(&device);
+            fnc.init(fence_desc{});
+            inflight.push_back(fnc);
 
-        DESTROY_QUEUE.push_back(&device);
+            vk_semaphore s1(&device), s2(&device);
+            s1.init(semaphore_desc{}), s2.init(semaphore_desc{});
 
-        static vk_fence inflight(&device);
-        inflight.init(fence_desc{});
-        
-        static vk_semaphore rendering_finished(&device), swapchain_image_available(&device);
-        rendering_finished.init(semaphore_desc{}), swapchain_image_available.init(semaphore_desc{});
+            rendering_finished.push_back(s1);
+            swapchain_image_available.push_back(s2);
+        }
+
+        //send frame data
+        FRAME_DATA.indexed_data.resize(MAX_FRAMES_IN_FLIGHT);
 
         vkGetDeviceQueue(device.get_handle(),
         find_queue_family(phys_device, surface.get_handle()).graphics_fam_index.value(),
-        0, &DRAW_DATA.graphics_queue);
+        0, &FRAME_DATA.graphics_queue);
         vkGetDeviceQueue(device.get_handle(),
         find_queue_family(phys_device, surface.get_handle()).present_fam_index.value(),
-        0, &DRAW_DATA.present_queue);
+        0, &FRAME_DATA.present_queue);
 
-        DRAW_DATA.cmdbuffer = cmd_buffers.get_handle()[0];
-        DRAW_DATA.device    =       device.get_handle();
-        DRAW_DATA.inflight_fence = inflight.get_handle();
-        DRAW_DATA.rendering_finished = rendering_finished.get_handle();
-        DRAW_DATA.swapchain_image_available = swapchain_image_available.get_handle();
-        DRAW_DATA.swapchain = swapchain.get_handle();
-        DRAW_DATA.inflight_fence = inflight.get_handle();
-        DRAW_DATA.swapchain_extent = swapchain.get_description().features.extent;
+        FRAME_DATA.device           = device.get_handle();
+        FRAME_DATA.swapchain        = swapchain.get_handle();
+        FRAME_DATA.swapchain_extent = swapchain.get_description().features.extent;
 
-        DRAW_DATA.framebuffers.resize(framebuffers.size());
+        FRAME_DATA.framebuffers.resize(framebuffers.size());
         for(size_t i = 0; i < framebuffers.size(); i++)
-            DRAW_DATA.framebuffers[i] = framebuffers[i].get_handle();
+            FRAME_DATA.framebuffers[i] = framebuffers[i].get_handle();
         
-        DRAW_DATA.renderpass = renderpass.get_handle();
-        DRAW_DATA.graphics_pipeline = graphics_pipeline.get_handle()[0];    
+        FRAME_DATA.renderpass = renderpass.get_handle();
+        FRAME_DATA.graphics_pipeline = graphics_pipeline.get_handle()[0];    
+
+        for(size_t i = 0; i < FRAME_DATA.indexed_data.size(); i++)
+        {
+            auto& data = FRAME_DATA.indexed_data[i];
+            data.cmdbuffer = cmd_buffers.get_handle()[i];
+            data.inflight_fence = inflight[i].get_handle();
+            data.rendering_finished = rendering_finished[i].get_handle();
+            data.swapchain_image_available = swapchain_image_available[i].get_handle();
+        }
     }
 
     //run this inside the render loop
@@ -1535,15 +1651,28 @@ public:
     }
     void draw()
     {
-        auto& G = DRAW_DATA;
-        vkWaitForFences(G.device, 1, &G.inflight_fence, VK_TRUE, UINT64_MAX);
-        vkResetFences(G.device, 1, &G.inflight_fence);
+        static uint32_t frame_index = 0;
+
+        auto& G = FRAME_DATA;
+        frame_index = (frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
+        auto& IDX = FRAME_DATA.indexed_data[frame_index];
+
+        vkWaitForFences(G.device, 1, &IDX.inflight_fence, VK_TRUE, UINT64_MAX);
+
+ENG_ERR_LOG << frame_index << '\r';
 
         uint32_t image_index;
-        vkAcquireNextImageKHR(G.device, G.swapchain, UINT64_MAX, G.swapchain_image_available, VK_NULL_HANDLE,
+        auto res = vkAcquireNextImageKHR(G.device, G.swapchain, UINT64_MAX, IDX.swapchain_image_available, VK_NULL_HANDLE,
         &image_index);
 
-        vkResetCommandBuffer(G.cmdbuffer, 0);
+        if(res == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+
+        }
+
+        vkResetFences(G.device, 1, &IDX.inflight_fence);
+
+        vkResetCommandBuffer(IDX.cmdbuffer, 0);
 
         command_buffer_data data;
         data.clear_value = {{0.f, 0.f, 0.f, 1.f}};
@@ -1555,23 +1684,23 @@ public:
         data.renderpass  = G.renderpass;
         data.graphics_pipeline = G.graphics_pipeline;
 
-        if(record_command_buffer(G.cmdbuffer, data))
+        if(record_command_buffer(IDX.cmdbuffer, data))
             throw std::runtime_error("Failed to record");
 
         VkSubmitInfo submit_info{};
         submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit_info.commandBufferCount = 1, submit_info.pCommandBuffers = &G.cmdbuffer;
-        submit_info.waitSemaphoreCount = 1, submit_info.pWaitSemaphores = &G.swapchain_image_available;
+        submit_info.commandBufferCount = 1, submit_info.pCommandBuffers = &IDX.cmdbuffer;
+        submit_info.waitSemaphoreCount = 1, submit_info.pWaitSemaphores = &IDX.swapchain_image_available;
         auto wait_stage = VkPipelineStageFlags{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         submit_info.pWaitDstStageMask = &wait_stage; //this is the stage that needs to wait. Other stages can execute
-        submit_info.pSignalSemaphores = &G.rendering_finished, submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores = &IDX.rendering_finished, submit_info.signalSemaphoreCount = 1;
 
-        if(vkQueueSubmit(G.graphics_queue, 1, &submit_info, G.inflight_fence))
+        if(vkQueueSubmit(G.graphics_queue, 1, &submit_info, IDX.inflight_fence))
             throw std::runtime_error("Failed to submit");
 
         VkPresentInfoKHR present_info{};
         present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present_info.waitSemaphoreCount = 1, present_info.pWaitSemaphores = &G.rendering_finished;
+        present_info.waitSemaphoreCount = 1, present_info.pWaitSemaphores = &IDX.rendering_finished;
         present_info.swapchainCount = 1, present_info.pSwapchains = &G.swapchain, present_info.pImageIndices = &image_index;
         
         vkQueuePresentKHR(G.present_queue, &present_info);
@@ -1611,13 +1740,13 @@ public:
     //note that a vulkan_communication_layer object can not be restarted after termination
     void terminate()
     {
-        vkDeviceWaitIdle(DRAW_DATA.device);
+        vkDeviceWaitIdle(FRAME_DATA.device);
 
         const size_t SIZE = DESTROY_QUEUE.size();
         for(size_t i = 0; i < SIZE; i++)
             DESTROY_QUEUE[SIZE-i-1]->destroy();
-        
-        GLFW_INTERFACE.terminate();
+
+        GLFW_INTERFACE.terminate(); //So terminating GLFW without terminating all vulkan objects will cause the swapchain to segfault! all this headache for this?
     }
 private:
     static VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFW_window_interface glfw_interface)
@@ -1729,23 +1858,36 @@ private:
     
     GLFW_window_interface GLFW_INTERFACE;
 
-    struct draw_data
+    uint32_t MAX_FRAMES_IN_FLIGHT = 1;
+
+    struct framebuffer_resizing_data
+    {
+        vk_swapchain* swapchain;
+        std::vector<vk_image_view*> image_views;
+        std::vector<vk_framebuffer*> framebuffers;
+    };
+    struct indexed_frame_data
     {
         VkFence                  inflight_fence;
         VkSemaphore   swapchain_image_available;
         VkSemaphore          rendering_finished;
-        VkDevice                         device;
         VkCommandBuffer               cmdbuffer;
-        VkSwapchainKHR                swapchain;
-        VkQueue                  graphics_queue;
-        VkQueue                   present_queue;
-        VkExtent2D             swapchain_extent;
-        VkRenderPass                 renderpass;
-        VkPipeline            graphics_pipeline;
-        std::vector<VkFramebuffer> framebuffers;
     };
-    draw_data DRAW_DATA;
-
+    struct frame_data
+    {
+        VkDevice                              device;
+        VkSwapchainKHR                     swapchain;
+        VkQueue                       graphics_queue;
+        VkQueue                        present_queue;
+        VkExtent2D                  swapchain_extent;
+        VkRenderPass                      renderpass;
+        VkPipeline                 graphics_pipeline;
+        std::vector<indexed_frame_data> indexed_data;
+        std::vector<VkFramebuffer>      framebuffers;
+        framebuffer_resizing_data resizing_ownership;
+    };
+    frame_data FRAME_DATA;
+    
     std::vector<destroyable*>   DESTROY_QUEUE;
 };
 
@@ -1755,7 +1897,7 @@ private:
 
 int main()
 {
-    vulkan_communication_instance instance;
+    vulkan_glfw_interface instance;
     vulkan_communication_instance_init_info init_info{{800, 600, "Vulkan Prototype"}, "Vulkan Prototype"};
 
     try
