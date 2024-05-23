@@ -1692,14 +1692,14 @@ private:
         
         uint32_t instance_layer_count;
         vkEnumerateInstanceLayerProperties(&instance_layer_count, nullptr);
-        VkLayerProperties instance_layer_properties[instance_layer_count];
-        vkEnumerateInstanceLayerProperties(&instance_layer_count, instance_layer_properties);
+        std::vector<VkLayerProperties> instance_layer_properties(instance_layer_count);
+        vkEnumerateInstanceLayerProperties(&instance_layer_count, instance_layer_properties.data());
 
-        const char* instance_layer_names[instance_layer_count];
+        std::vector<const char*> instance_layer_names(instance_layer_count);
         for(size_t i = 0; i < instance_layer_count; i++)
             instance_layer_names[i] = instance_layer_properties[i].layerName;
 
-        if(!check_support((size_t) instance_layer_count, instance_layer_names,
+        if(!check_support((size_t) instance_layer_count, instance_layer_names.data(),
         ext_info.layers.data(), ext_info.layers.size()))
             throw std::runtime_error("Failed to find required instance layers");
 
