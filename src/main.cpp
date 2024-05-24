@@ -27,7 +27,7 @@
 constexpr uint32_t VK_UINT32_MAX = 0xFFFFFFFF;
 
 std::ostream& ENG_LOG     = std::cout;
-std::ostream& ENG_ERR_LOG = std::cerr;
+std::ostream& ENG_ERR_LOG = std::cout;
 
 template<class T> void ignore( const T& ) {} //ignores variable unused warnings :D
 
@@ -231,10 +231,14 @@ protected:
     //1. vk_object is not empty(), i.e. has a valid vulkan handle
     //2. shared_handle_ptr is unique(), i.e. last owner of said handle
     virtual void free_obj() = 0;
+    virtual void free_obj_wraparound() = 0; //free_obj intercept
+
     //Guarantees by the time execution reaches this function :
     //1. object was empty prior to the call to init()
     //2. shared_handle_ptr is pointing to a new uninitialized handle
     virtual VkResult create_obj() = 0;
+    virtual VkResult create_obj_wraparound() = 0; //create_obj intercept
+
     description_t description;
     std::shared_ptr<handle_t> shared_handle_ptr;
 public:
@@ -244,16 +248,17 @@ public:
     //Returns VK_SUCCESS if the object is already initialized.
     virtual VkResult init(description_t description) final 
     {
-        if(!shared_handle_ptr)
+        if(empty())
         {
             this->description = description;
 
             shared_handle_ptr = std::make_shared<handle_t>();
 
-            auto res = create_obj();
+            auto res = create_obj_wraparound();
             if(res != VK_SUCCESS)
+            {
                 shared_handle_ptr.reset();
-
+            }
             return res;
         }
         else
@@ -271,50 +276,69 @@ public:
         {
             return;
         }
-
         if(shared_handle_ptr.unique())
         {
-            free_obj();
-
+            free_obj_wraparound();
         }
         description = description_t{};
         shared_handle_ptr.reset();
-    };
+    }
 
-    vk_object(const vk_object& copy)
+    vk_object& operator=(vk_object&& rhs)
     {
+        this->shared_handle_ptr = rhs.shared_handle_ptr;
+        this->description = rhs.description;
+        rhs.destroy();
+        return *this;
+    }
+    vk_object& operator=(const vk_object& rhs)
+    {
+        if(this == &rhs)
+            return *this;
+
         //AFAIK this should guarantee that the underlying vulkan object is valid
-        if(copy.empty())    //don't copy empty object, they can't share anything
-            return;
+        if(rhs.empty())    //don't copy empty object, they can't share anything
+            return *this;
         this->destroy();    //if this object is not instantiated this does nothing
 
-        this->shared_handle_ptr = copy.shared_handle_ptr; //now they share the underlying vulkan object
+        this->shared_handle_ptr = rhs.shared_handle_ptr; //now they share the underlying vulkan object
 
-        this->description = copy.description;
+        this->description = rhs.description;
+
+        return *this;
     }
-    vk_object(){}
+    vk_object(const vk_object& rhs)
+    {
+        *this = rhs;
+    }
+    vk_object(vk_object&& other)
+    {
+        this->shared_handle_ptr = other.shared_handle_ptr;
+        this->description = other.description;
+        other.destroy();
+    }
+    vk_object() : description{} {shared_handle_ptr.reset();}
     
-    //Returns true if object has an instantiated (non nullptr) handle
-    virtual bool empty() const final {return shared_handle_ptr.get() == nullptr;}
-    //If the vk_object is empty() this will return VK_NULL_HANDLE
+    //Returns true if the underlying vulkan object is not initalized
+    virtual bool empty() const final {return shared_handle_ptr.use_count() == 0;}
+
+    //Returns true if object is uninitialized
     virtual handle_t get_handle() const final 
     {
         if(empty())
-            return VK_NULL_HANDLE;
+            return handle_t{VK_NULL_HANDLE};
         return *shared_handle_ptr.get();
     }
     //description is always the latest description_t struct passed to init(), otherwise a default constructed one
     description_t get_description(){return description;}
 
-    virtual ~vk_object()
-    {
-    }
+    virtual ~vk_object(){}
 };
 
 class parent : virtual public destroyable
 {
 protected:
-    virtual void destroy_children() final
+    virtual void destroy_children()
     {
         const size_t SIZE = children.size(); 
         for(size_t i = 0; i < SIZE; i++)
@@ -324,19 +348,19 @@ protected:
     std::vector<destroyable*> children;
 public:
     virtual ~parent() {destroy_children();}
-    void remove_child(destroyable* child)
+    virtual void remove_child(destroyable* child)
     {
         auto itr = std::find(children.begin(), children.end(), child);
         if(itr != children.end())
             children.erase(itr);
     }
-    void add_child(destroyable* child)
+    virtual void add_child(destroyable* child)
     {
         children.push_back(child);
     }
 };
 
-template <class parent_t, std::enable_if_t<std::is_base_of<parent, parent_t>::value && !std::is_same<parent_t, parent>::value, int> = 0 >
+template <class parent_t>
 class child : virtual public destroyable
 {
 protected:
@@ -346,16 +370,7 @@ public:
     {
         if(this == &rhs)
             return *this;
-        this->parent_ptr = rhs.parent_ptr;
-        parent* p = (parent*)parent_ptr;
-        p->add_child(this);
-        return *this;
-    }
-    child& operator= (const child&& rhs)
-    {
-        this->parent_ptr = rhs.parent_ptr;
-        parent* p = (parent*)parent_ptr;
-        p->add_child(this);
+        set_parent(rhs.parent_ptr);
         return *this;
     }
     child(const child& copy)
@@ -363,11 +378,10 @@ public:
         *this = copy;
     }
     
-    child(parent_t* parent_ptr) 
+    child() : parent_ptr(nullptr) 
     {
-        set_parent(parent_ptr);
+        static_assert(std::is_base_of<parent, parent_t>::value && !std::is_same<parent_t, parent>::value, "Type parameter passed to child should be derived class of parent");
     }
-    child(){}
     void set_parent(parent_t* parent_ptr)
     {
         if(detached())
@@ -393,13 +407,120 @@ public:
 
         parent_ptr = nullptr;
     }
-    virtual ~child()
-    {
-        detach_from_parent();
-    }
-    
+    virtual ~child(){detach_from_parent();}
 };
 
+template <class p1, class p2>
+class child<std::pair<p1, p2>> : virtual public destroyable
+{
+protected:
+    std::pair<p1*, p2*> parent_ptrs = std::pair<p1*, p2*>{nullptr, nullptr};
+public:
+    child& operator=(const child& rhs)
+    {
+        if(this == &rhs)
+            return *this;
+        set_parent(rhs.parent_ptrs);
+        return *this;
+    }
+    child(const child& copy)
+    {
+        *this = copy;
+    }
+    bool detached(){return parent_ptrs.first == nullptr || parent_ptrs.second == nullptr;}
+    void set_parent(std::pair<p1*, p2*> parents) 
+    {
+        if(detached())
+        {
+            this->parent_ptrs = parents;
+            parent* p_1 = reinterpret_cast<parent*>(parents.first);
+            p_1->add_child(this);
+            parent* p_2 = reinterpret_cast<parent*>(parents.second);
+            p_2->add_child(this);
+        }
+    }
+    void detach_from_parent()
+    {
+        if(detached())
+            return;
+
+        parent* p = reinterpret_cast<parent*>(parent_ptrs.first);
+        p->remove_child(this);
+                p = reinterpret_cast<parent*>(parent_ptrs.second);
+        p->remove_child(this);
+
+        this->parent_ptrs = {nullptr, nullptr};
+    }
+    child() : parent_ptrs{nullptr, nullptr} 
+    {
+        static_assert(std::is_base_of<parent, p1>::value && !std::is_same<p1, parent>::value, "Type parameter passed to child should be derived class of parent");
+        static_assert(std::is_base_of<parent, p2>::value && !std::is_same<p2, parent>::value, "Type parameter passed to child should be derived class of parent");
+    }
+    virtual ~child() {detach_from_parent();}
+};
+
+template <class handle_t, class description_t, class parent_t>
+class vk_child : public vk_object<handle_t, description_t>, public child<parent_t>
+{
+protected:
+    virtual void free_obj_wraparound() override final
+    {
+        if(this->detached())
+            throw std::runtime_error("Trying to destroy an object without a parent pointer");
+        this->free_obj();
+        this->detach_from_parent();
+    }
+    virtual VkResult create_obj_wraparound() override final
+    {
+        if(this->detached())
+            throw std::runtime_error("Tried to initialize a child without parent pointers, kid. Don't take it personal.");
+        return this->create_obj();
+    }
+public:
+    vk_child(){}
+    virtual ~vk_child() {}
+};
+
+template <class handle_t, class description_t>
+class vk_parent : public vk_object<handle_t, description_t>, public parent
+{
+protected:
+    virtual void free_obj_wraparound() override final
+    {
+        this->destroy_children();
+        this->free_obj();
+    }
+    virtual VkResult create_obj_wraparound() override final
+    {
+        return this->create_obj();
+    }
+public:
+    virtual ~vk_parent(){}
+    vk_parent(){}
+};
+
+
+//this class as well as child<std::pair> are causing problems. for now don't use them
+template <class handle_t, class description_t, class parent_t>
+class vk_parent_child : public vk_object<handle_t, description_t>, public child<parent_t>, public parent
+{
+protected:
+    virtual void free_obj_wraparound() override final
+    {
+        this->destroy_children();
+        this->free_obj();
+        this->detach_from_parent();
+    }
+    virtual VkResult create_obj_wraparound() override final
+    {
+        if(this->detached())
+            throw std::runtime_error("Tried to initialize a child without parent pointers, kid. Don't take it personal.");
+        return this->create_obj();
+    }
+public:
+    virtual ~vk_parent_child(){}
+    vk_parent_child(){}
+};
 
 /************************************************MODULES & DATA************************************************/
 
@@ -1125,7 +1246,7 @@ bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
     return extensions_supported && is_complete(indices) && supports_swapchain;
 }
 
-class vk_instance          : public vk_object<VkInstance              , instance_desc>         , public parent
+class vk_instance          : public vk_parent<VkInstance                 , instance_desc>
 {
 public:
     virtual ~vk_instance() final {destroy();}
@@ -1137,11 +1258,10 @@ private:
     }
     virtual void free_obj() override final
     {
-        destroy_children();
         vkDestroyInstance(get_handle(), nullptr);
     }
 };
-class vk_debug_messenger   : public vk_object<VkDebugUtilsMessengerEXT, debug_messenger_desc>  , public child<vk_instance>
+class vk_debug_messenger   : public vk_child<VkDebugUtilsMessengerEXT    , debug_messenger_desc  , vk_instance>
 {
     virtual VkResult create_obj() override final
     {
@@ -1170,14 +1290,12 @@ class vk_debug_messenger   : public vk_object<VkDebugUtilsMessengerEXT, debug_me
     virtual void free_obj() override final
     {
         destroy_debug_messenger(parent_ptr->get_handle(), this->get_handle());
-        detach_from_parent();
     }
 public:
     vk_debug_messenger(){}
-    vk_debug_messenger(vk_instance* parent) : child<vk_instance>(parent) {}
     virtual ~vk_debug_messenger() final {destroy();}
 };
-class vk_surface           : public vk_object<VkSurfaceKHR            , surface_desc>          , public child<vk_instance>
+class vk_surface           : public vk_child<VkSurfaceKHR                , surface_desc          , vk_instance>
 {
     virtual VkResult create_obj() override final
     {
@@ -1189,12 +1307,12 @@ class vk_surface           : public vk_object<VkSurfaceKHR            , surface_
     }
 public:
     vk_surface(){}
-    vk_surface(vk_instance* parent) : child<vk_instance>(parent) {}
     virtual ~vk_surface() final {destroy();}
 };
-class vk_device            : public vk_object<VkDevice                , device_desc>           , public parent
+class vk_device            : public vk_parent<VkDevice                   , device_desc>
 {
 public:
+    vk_device(){}
     virtual ~vk_device() final {destroy();}
 private:
     virtual VkResult create_obj() override final
@@ -1204,11 +1322,10 @@ private:
     }
     virtual void     free_obj() override final
     {
-        destroy_children();
         vkDestroyDevice(this->get_handle(), nullptr);
     }
 };
-class vk_swapchain         : public vk_object<VkSwapchainKHR          , swapchain_desc>        , public child<vk_device>
+class vk_swapchain         : public vk_child<VkSwapchainKHR              , swapchain_desc        , vk_device>
 {
     virtual VkResult create_obj() override final
     {
@@ -1221,10 +1338,9 @@ class vk_swapchain         : public vk_object<VkSwapchainKHR          , swapchai
     }
 public:
     vk_swapchain(){}
-    vk_swapchain(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_swapchain() final {destroy();}
 };
-class vk_image_view        : public vk_object<VkImageView             , image_view_desc>       , public child<vk_device>
+class vk_image_view        : public vk_child<VkImageView                 , image_view_desc       , vk_device>
 {
     virtual VkResult create_obj() override final
     {
@@ -1237,10 +1353,9 @@ class vk_image_view        : public vk_object<VkImageView             , image_vi
     }
 public:
     vk_image_view(){}
-    vk_image_view(vk_device* parent) : child<vk_device>(parent) {}
     virtual ~vk_image_view() final {destroy();}
 };
-class vk_renderpass        : public vk_object<VkRenderPass            , renderpass_desc>       , public child<vk_device>
+class vk_renderpass        : public vk_child<VkRenderPass                , renderpass_desc       , vk_device>
 {
     virtual VkResult create_obj() override final
     {
@@ -1252,10 +1367,10 @@ class vk_renderpass        : public vk_object<VkRenderPass            , renderpa
         vkDestroyRenderPass(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public:
-    vk_renderpass(vk_device* parent) : child<vk_device>(parent) {}
+    vk_renderpass(){}
     virtual ~vk_renderpass() final {destroy();}
 };
-class vk_shader_module     : public vk_object<VkShaderModule          , shader_module_desc>    , public child<vk_device>
+class vk_shader_module     : public vk_child<VkShaderModule              , shader_module_desc    , vk_device>
 {
     virtual void free_obj() override final
     {
@@ -1267,32 +1382,29 @@ class vk_shader_module     : public vk_object<VkShaderModule          , shader_m
         return vkCreateShaderModule(parent_ptr->get_handle(), &info, nullptr, shared_handle_ptr.get());
     }
 public:
-    vk_shader_module(vk_device* parent) : child<vk_device>(parent) {}
+    vk_shader_module(){}
     virtual ~vk_shader_module() final {destroy();}
 };
-class vk_graphics_pipeline : public vk_object<VkPipeline*             , graphics_pipeline_desc>, public child<vk_device>
+class vk_graphics_pipeline : public vk_child<std::vector<VkPipeline>     , graphics_pipeline_desc, vk_device>
 {
     virtual VkResult create_obj() override final
     {
-        handles.resize(description.count.value_or(1));
-        *shared_handle_ptr.get() = handles.data();
+        shared_handle_ptr.get()->resize(description.count.value_or(1));
 
         auto info = description.get_create_info();
         return vkCreateGraphicsPipelines(parent_ptr->get_handle(), description.pipeline_cache.value_or(VK_NULL_HANDLE),
-        description.count.value_or(1), &info, nullptr, *shared_handle_ptr.get());
+        description.count.value_or(1), &info, nullptr, shared_handle_ptr.get()->data());
     }
     virtual void free_obj() override final
     {
-        for(size_t i = 0; i < description.count.value_or(1); i++)
-            vkDestroyPipeline(parent_ptr->get_handle(), handles[i], nullptr);
-        handles.clear();
+        for(size_t i = 0; i < this->get_handle().size(); i++)
+            vkDestroyPipeline(parent_ptr->get_handle(), this->get_handle()[i], nullptr);
     }
-    std::vector<VkPipeline> handles;
 public:
-    vk_graphics_pipeline(vk_device* parent) : child<vk_device>(parent) {}
+    vk_graphics_pipeline(){}
     virtual ~vk_graphics_pipeline() final {destroy();}
 };
-class vk_pipeline_layout   : public vk_object<VkPipelineLayout        , pipeline_layout_desc>  , public child<vk_device>
+class vk_pipeline_layout   : public vk_child<VkPipelineLayout            , pipeline_layout_desc  , vk_device>
 {
     virtual VkResult create_obj() override final
     {
@@ -1304,10 +1416,10 @@ class vk_pipeline_layout   : public vk_object<VkPipelineLayout        , pipeline
         vkDestroyPipelineLayout(parent_ptr->get_handle(), this->get_handle(),  nullptr);
     }
 public:
-    vk_pipeline_layout(vk_device* parent) : child<vk_device>(parent) {}
+    vk_pipeline_layout(){}
     virtual ~vk_pipeline_layout() final {destroy();}
 };
-class vk_framebuffer       : public vk_object<VkFramebuffer           , framebuffer_desc>      , public child<vk_device>
+class vk_framebuffer       : public vk_child<VkFramebuffer               , framebuffer_desc      , vk_device>
 {   
     virtual VkResult create_obj() override final
     {
@@ -1319,10 +1431,10 @@ class vk_framebuffer       : public vk_object<VkFramebuffer           , framebuf
         vkDestroyFramebuffer(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public:
-    vk_framebuffer(vk_device* parent) : child<vk_device>(parent) {}
+    vk_framebuffer(){}
     virtual ~vk_framebuffer() final {destroy();}
 };
-class vk_cmd_pool          : public vk_object<VkCommandPool           , cmd_pool_desc>         , public child<vk_device>, public parent
+class vk_cmd_pool          : public vk_child<VkCommandPool               , cmd_pool_desc         , vk_device>
 {
     virtual VkResult create_obj() override final
     {
@@ -1334,35 +1446,30 @@ class vk_cmd_pool          : public vk_object<VkCommandPool           , cmd_pool
         vkDestroyCommandPool(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public:
-    vk_cmd_pool(vk_device* parent) : child<vk_device>(parent) {}
+    vk_cmd_pool() {}
     virtual ~vk_cmd_pool() final 
     {
-        destroy_children();
         destroy();
     }
 };
-class vk_cmd_buffers       : public vk_object<VkCommandBuffer*        , cmd_buffers_desc>      , public child<vk_device>, public child<vk_cmd_pool>
+class vk_cmd_buffers       : public vk_child<std::vector<VkCommandBuffer>, cmd_buffers_desc      , vk_device>
 {
     virtual VkResult create_obj() override final
     {
-        handles.resize(description.buffer_count);
-        *shared_handle_ptr.get() = handles.data();
+        shared_handle_ptr.get()->resize(description.buffer_count);
         auto info = description.get_alloc_info();
-        return vkAllocateCommandBuffers(child<vk_device>::parent_ptr->get_handle(), &info, *shared_handle_ptr.get());
+        return vkAllocateCommandBuffers(parent_ptr->get_handle(), &info, shared_handle_ptr.get()->data());
     }
     virtual void free_obj() override final
     {
-        vkFreeCommandBuffers(child<vk_device>::parent_ptr->get_handle(), child<vk_cmd_pool>::parent_ptr->get_handle(),
-        description.buffer_count, this->get_handle());
-        handles.clear();
+        vkFreeCommandBuffers(parent_ptr->get_handle(), description.cmd_pool, 
+        description.buffer_count, this->get_handle().data());
     }
-    std::vector<VkCommandBuffer> handles;
 public:
-    vk_cmd_buffers(vk_device* parent_device, vk_cmd_pool* parent_cmd_pool) : child<vk_device>(parent_device),
-    child<vk_cmd_pool>(parent_cmd_pool) {}
+    vk_cmd_buffers(){}
     virtual ~vk_cmd_buffers() final {destroy();}
 };
-class vk_semaphore         : public vk_object<VkSemaphore             , semaphore_desc>        , public child<vk_device>
+class vk_semaphore         : public vk_child<VkSemaphore                 , semaphore_desc        , vk_device>
 {
     virtual VkResult create_obj() override final
     {
@@ -1374,10 +1481,10 @@ class vk_semaphore         : public vk_object<VkSemaphore             , semaphor
         vkDestroySemaphore(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public: 
-    vk_semaphore(vk_device* parent) : child<vk_device>(parent) {}
+    vk_semaphore(){}
     virtual ~vk_semaphore() final {destroy();}
 };
-class vk_fence             : public vk_object<VkFence                 , fence_desc>            , public child<vk_device>
+class vk_fence             : public vk_child<VkFence                     , fence_desc            , vk_device>
 {
     virtual VkResult create_obj() override final
     {
@@ -1389,7 +1496,7 @@ class vk_fence             : public vk_object<VkFence                 , fence_de
         vkDestroyFence(parent_ptr->get_handle(), this->get_handle(), nullptr);
     }
 public: 
-    vk_fence(vk_device* parent) : child<vk_device>(parent) {}
+    vk_fence(){}
     virtual ~vk_fence() final {destroy();}
 };
 
@@ -1451,12 +1558,14 @@ public:
 
         if(DEBUG_MODE)
         {
-            static vk_debug_messenger debug_messenger(&instance);
+            static vk_debug_messenger debug_messenger;
+            debug_messenger.set_parent(&instance);
             if(debug_messenger.init({get_debug_create_info()}))
             throw std::runtime_error("Failed to create debug messenger");
         }
 
-        static vk_surface surface(&instance);
+        static vk_surface surface;
+        surface.set_parent(&instance);
         if(surface.init({GLFW_INTERFACE}))
             throw std::runtime_error("Failed to create surface");
 
@@ -1475,7 +1584,8 @@ public:
                 throw std::runtime_error("Failed to create device");
         }
 
-        static vk_swapchain swapchain(&device);
+        static vk_swapchain swapchain;
+        swapchain.set_parent(&device);
         {
             swapchain_support swp_support = get_swapchain_support(phys_device, surface.get_handle());
             swapchain_features features   = get_swapchain_features(swp_support, GLFW_INTERFACE);
@@ -1489,12 +1599,13 @@ public:
 
         auto swapchain_images = get_swapchain_images(swapchain.get_handle(), device.get_handle());
         static std::vector<vk_image_view> swapchain_image_views;
-        swapchain_image_views.reserve(swapchain_images.size());
+        swapchain_image_views.resize(swapchain_images.size());
         for(size_t i = 0; i < swapchain_images.size(); i++)
         {
             auto& image = swapchain_images[i];
 
-            vk_image_view image_view(&device);
+            vk_image_view image_view;
+            image_view.set_parent(&device);
 
             image_view_desc description;
             description.format = swapchain.get_description().features.surface_format.format;
@@ -1502,10 +1613,10 @@ public:
             if(image_view.init(description))
                 throw std::runtime_error("Failed to create image view");
 
-            swapchain_image_views.push_back(image_view);
+            swapchain_image_views[i] = image_view;
         }
-ENG_ERR_LOG << "SIZE : " << swapchain_image_views.size() << std::endl;
-        static vk_renderpass renderpass(&device);
+        static vk_renderpass renderpass;
+        renderpass.set_parent(&device);
         if(renderpass.init(get_simple_renderpass_description(swapchain.get_description().features)))
             throw std::runtime_error("Failed to create render pass");
 
@@ -1513,7 +1624,8 @@ ENG_ERR_LOG << "SIZE : " << swapchain_image_views.size() << std::endl;
         read_binary_file({"shaders/"}, "triangle_frag.spv", fragment_code);
         read_binary_file({"shaders/"}, "triangle_vert.spv", vertex_code);
 
-        vk_shader_module fragment_module(&device), vertex_module(&device);
+        vk_shader_module fragment_module, vertex_module;
+        fragment_module.set_parent(&device), vertex_module.set_parent(&device);
         {
             shader_module_desc v_description, f_description;
             f_description.byte_code = fragment_code;
@@ -1523,7 +1635,8 @@ ENG_ERR_LOG << "SIZE : " << swapchain_image_views.size() << std::endl;
                 throw std::runtime_error("Failed to create shader modules");
         }
 
-        static vk_graphics_pipeline graphics_pipeline(&device);
+        static vk_graphics_pipeline graphics_pipeline;
+        graphics_pipeline.set_parent(&device);
         {
             graphics_pipeline_desc description{};
             description.shader_stages_info = get_shader_stages({vertex_module.get_description(), fragment_module.get_description()},
@@ -1543,7 +1656,8 @@ ENG_ERR_LOG << "SIZE : " << swapchain_image_views.size() << std::endl;
             description.renderpass = renderpass.get_handle();
             description.subpass_index = 0;
 
-            vk_pipeline_layout pipeline_layout(&device);
+            vk_pipeline_layout pipeline_layout;
+            pipeline_layout.set_parent(&device);
             if(pipeline_layout.init(pipeline_layout_desc{}))
                 throw std::runtime_error("Failed to init pipeline layout");
 
@@ -1557,7 +1671,8 @@ ENG_ERR_LOG << "SIZE : " << swapchain_image_views.size() << std::endl;
         framebuffers.reserve(swapchain_image_views.size());
         for(size_t i = 0; i < swapchain_image_views.size(); i++)
         {
-            vk_framebuffer framebuffer(&device);
+            vk_framebuffer framebuffer;
+            framebuffer.set_parent(&device);
 
             const auto& image_view = swapchain_image_views[i];
 
@@ -1574,7 +1689,8 @@ ENG_ERR_LOG << "SIZE : " << swapchain_image_views.size() << std::endl;
             framebuffers.push_back(framebuffer);
         }
 
-        static vk_cmd_pool cmd_pool(&device);
+        static vk_cmd_pool cmd_pool;
+        cmd_pool.set_parent(&device);
         {
             cmd_pool_desc description;
             description.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1588,7 +1704,8 @@ ENG_ERR_LOG << "SIZE : " << swapchain_image_views.size() << std::endl;
 
         MAX_FRAMES_IN_FLIGHT = 2;
 
-        static vk_cmd_buffers cmd_buffers(&device, &cmd_pool);
+        static vk_cmd_buffers cmd_buffers;
+        cmd_buffers.set_parent(&device);
         {
             cmd_buffers_desc description{};
             description.buffer_count = MAX_FRAMES_IN_FLIGHT;
@@ -1596,16 +1713,19 @@ ENG_ERR_LOG << "SIZE : " << swapchain_image_views.size() << std::endl;
             if(cmd_buffers.init(description))
                 throw std::runtime_error("Failed to allocate command buffers");
         }
+        DESTROY_QUEUE.push_back(&cmd_buffers);
         static std::vector<vk_fence> inflight{};
         static std::vector<vk_semaphore> rendering_finished{}, swapchain_image_available{};
         inflight.reserve(MAX_FRAMES_IN_FLIGHT), rendering_finished.reserve(MAX_FRAMES_IN_FLIGHT), swapchain_image_available.reserve(MAX_FRAMES_IN_FLIGHT);
         for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
-            vk_fence fnc(&device);
+            vk_fence fnc;
+            fnc.set_parent(&device);
             fnc.init(fence_desc{});
             inflight.push_back(fnc);
 
-            vk_semaphore s1(&device), s2(&device);
+            vk_semaphore s1, s2;
+            s1.set_parent(&device), s2.set_parent(&device);
             s1.init(semaphore_desc{}), s2.init(semaphore_desc{});
 
             rendering_finished.push_back(s1);
