@@ -1,6 +1,7 @@
 #include"volk.h"
 #include "GLFW/glfw3.h"
 #include "read_file.h"
+#include "glm/glm.hpp"
 
 #include <iostream>
 #include <vector>
@@ -13,7 +14,9 @@
 #include <array>
 #include <memory>
 
+
 /************************************************GLOBALS************************************************/
+
 
 #define APP_NAME "Vulkan Prototype"
 
@@ -31,7 +34,9 @@ std::ostream& ENG_ERR_LOG = std::cout;
 
 template<class T> void ignore( const T& ) {} //ignores variable unused warnings :D
 
+
 /************************************************PUBLIC STRUCTS************************************************/
+
 
 struct window_info
 {
@@ -1260,6 +1265,20 @@ private:
     friend class vulkan_glfw_interface;
 };
 
+
+struct vertex
+{
+    glm::vec2   pos;
+    glm::vec3 color;
+};
+const std::vector<vertex> TRIANGLE_VERTICES
+{
+    {{ 0.0f, -0.5f}, {1.f, 0.f, 0.f}},
+    {{ 0.5f,  0.5f}, {0.f, 1.f, 0.f}},
+    {{-0.5f,  0.5f}, {0.f, 0.f, 1.f}}
+};
+
+
 //only call the vulkan API here
 class vulkan_glfw_interface
 {
@@ -1509,6 +1528,13 @@ public:
     }
     void recreate_swapchain()
     {
+        int width, height;
+        glfwGetFramebufferSize(GLFW_INTERFACE.WINDOW_PTR, &width, &height);
+        while(width == 0 || height == 0)
+        {
+            glfwGetFramebufferSize(GLFW_INTERFACE.WINDOW_PTR, &width, &height);
+        }
+        
         auto& G = GLOBALS;
 
         vkDeviceWaitIdle(G.device);
@@ -1597,6 +1623,7 @@ public:
                 recreate_swapchain();
                 G = get_frame_data(GLOBALS);//update frame data
                 IDX = G.indexed_data[frame_index];
+                framebuffer_resized = false;    //since this would be set, unset it 
             }
             else if(res != VK_SUBOPTIMAL_KHR)
                 throw std::runtime_error("Failed to fetch frame");
