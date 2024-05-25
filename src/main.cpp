@@ -1512,13 +1512,6 @@ public:
         auto& G = GLOBALS;
 
         vkDeviceWaitIdle(G.device);
-        
-        if(G.swapchain)
-            G.swapchain.destroy();
-        for(auto& x : G.swp_framebuffers)
-            x.destroy();
-        for(auto& x : G.swp_view)
-            x.destroy();
 
         vk_swapchain new_swp;
         swapchain_desc desc{};
@@ -1530,6 +1523,7 @@ public:
         desc.device_queues = G.device.get_description().device_queues;
         desc.parent = G.device;
         desc.surface = G.surface;
+        desc.old_swapchain = G.swapchain;
         auto res = new_swp.init(desc);
         {
             if(res == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR)
@@ -1571,6 +1565,12 @@ public:
             
             framebuffers.push_back(frm_bfr);
         }
+        if(G.swapchain)
+            G.swapchain.destroy();
+        for(auto& x : G.swp_framebuffers)
+            x.destroy();
+        for(auto& x : G.swp_view)
+            x.destroy();
         G.swapchain = new_swp;
         G.swp_framebuffers = framebuffers;
         G.swp_view = img_vs;
