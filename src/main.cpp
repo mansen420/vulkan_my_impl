@@ -252,7 +252,7 @@ public:
 
     //record description
     virtual VkResult init(description_t description) override {this->description = description; return init();}
-    virtual description_t get_description() final {return description;}
+    virtual description_t get_description() const final {return description;}
 
     vk_hndl() : description(description_t{}), handle(hndl_t{VK_NULL_HANDLE}) {}
     vk_hndl(hndl_t handle) : description(description_t{}), handle(handle) {}
@@ -674,6 +674,24 @@ struct dynamic_state_desc
         return info;
     };
 };
+struct vertex_input_desc
+{
+    std::vector<VkVertexInputBindingDescription>   binding_descriptions;
+    std::vector<VkVertexInputAttributeDescription> attrib_descriptions;
+    std::optional<VkPipelineVertexInputStateCreateFlags> flags;
+    VkPipelineVertexInputStateCreateInfo get_info()
+    {
+        VkPipelineVertexInputStateCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        info.flags = flags.value_or(0);
+        info.vertexBindingDescriptionCount   = static_cast<uint32_t>(binding_descriptions.size());
+        info.pVertexBindingDescriptions      = binding_descriptions.data();
+        info.vertexAttributeDescriptionCount = static_cast<uint32_t>(attrib_descriptions.size());
+        info.pVertexAttributeDescriptions    = attrib_descriptions.data();
+        info.pNext = nullptr;
+        return info;
+    }
+};
 struct graphics_pipeline_desc
 {
     VkDevice parent;
@@ -684,7 +702,7 @@ struct graphics_pipeline_desc
     std::optional<VkPipelineCache> pipeline_cache;
     std::optional<VkPipelineDepthStencilStateCreateInfo> depth_stencil_info;
     std::vector<VkPipelineShaderStageCreateInfo> shader_stages_info;
-    VkPipelineVertexInputStateCreateInfo          vertex_input_info;
+    vertex_input_desc                             vertex_input_info;
     VkPipelineInputAssemblyStateCreateInfo      input_assembly_info;
     dynamic_state_desc                           dynamic_state_info;
     viewport_state_desc                         viewport_state_info;
@@ -698,7 +716,8 @@ struct graphics_pipeline_desc
         pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         pipeline_info.stageCount = static_cast<uint32_t>(shader_stages_info.size()), pipeline_info.pStages = shader_stages_info.data();
 
-        pipeline_info.pVertexInputState   =   &vertex_input_info;
+        vertex_input_state = vertex_input_info.get_info();
+        pipeline_info.pVertexInputState   =   &vertex_input_state;
         pipeline_info.pInputAssemblyState = &input_assembly_info;
 
         viewport_state = viewport_state_info.get_info();
@@ -721,9 +740,10 @@ struct graphics_pipeline_desc
         return pipeline_info;
     }
 private:
-    VkPipelineViewportStateCreateInfo      viewport_state;
-    VkPipelineColorBlendStateCreateInfo color_blend_state;
-    VkPipelineDynamicStateCreateInfo        dynamic_state;
+    VkPipelineVertexInputStateCreateInfo vertex_input_state;
+    VkPipelineViewportStateCreateInfo    viewport_state;
+    VkPipelineColorBlendStateCreateInfo  color_blend_state;
+    VkPipelineDynamicStateCreateInfo     dynamic_state;
 };
 struct pipeline_layout_desc
 {
@@ -822,6 +842,36 @@ struct fence_desc
         info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         info.flags = flags.value_or(VK_FENCE_CREATE_SIGNALED_BIT);
         return info;
+    }
+};
+struct buffer_desc
+{
+    VkDevice parent;
+
+    VkDeviceSize size;
+    VkBufferUsageFlags usage;
+
+    std::vector<uint32_t> queue_fam_indices;
+    
+    std::optional<VkSharingMode> sharing_mode;
+    std::optional<VkBufferCreateFlags> flags;
+    VkBufferCreateInfo get_create_info()
+    {
+        VkBufferCreateInfo create_info{};
+        create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+
+        create_info.flags = flags.value_or(0);
+        create_info.pNext = nullptr;
+
+        create_info.size  = size;
+        create_info.usage = usage;
+
+        create_info.queueFamilyIndexCount = static_cast<uint32_t>(queue_fam_indices.size());
+        create_info.pQueueFamilyIndices   = queue_fam_indices.data();
+
+        create_info.sharingMode = sharing_mode.value_or(create_info.queueFamilyIndexCount > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE);
+
+        return create_info;
     }
 };
 
@@ -1250,6 +1300,20 @@ public:
         vkDestroyFence(description.parent, this->handle, nullptr);
     }
 };
+class vk_buffer            : public vk_hndl<VkBuffer, buffer_desc>
+{
+public:
+    using vk_hndl::init;
+    virtual VkResult init() override final
+    {
+        auto info = description.get_create_info();
+        return vkCreateBuffer(description.parent, &info, nullptr, &handle);
+    }
+    virtual void destroy() override final
+    {
+        vkDestroyBuffer(description.parent, handle, nullptr);
+    }
+};
 
 class window_interface
 {
@@ -1278,6 +1342,27 @@ const std::vector<vertex> TRIANGLE_VERTICES
     {{-0.5f,  0.5f}, {0.f, 0.f, 1.f}}
 };
 
+template <typename vertex_t> VkVertexInputBindingDescription get_per_vertex_binding_description(uint32_t binding)
+{
+    VkVertexInputBindingDescription description{};
+
+    description.binding = binding;
+    description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    description.stride = sizeof(vertex_t);
+
+    return description;
+}
+template <typename vertex_t> std::vector<VkVertexInputAttributeDescription> get_attrib_description(uint32_t binding);
+template<> 
+std::vector<VkVertexInputAttributeDescription> get_attrib_description<vertex> (uint32_t binding)
+{
+    std::vector<VkVertexInputAttributeDescription> descriptions(2);
+    descriptions[0].binding  = binding, descriptions[1].binding  = binding;
+    descriptions[0].location = 0      , descriptions[1].location = 1;
+    descriptions[0].format   = VK_FORMAT_R32G32_SFLOAT      , descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    descriptions[0].offset   = offsetof(vertex, vertex::pos), descriptions[1].offset = offsetof(vertex, vertex::color);
+    return descriptions;
+}
 
 //only call the vulkan API here
 class vulkan_glfw_interface
@@ -1301,6 +1386,7 @@ class vulkan_glfw_interface
         VkViewport   dynamic_viewport;
         VkRect2D      dynamic_scissor;
         VkPipeline  graphics_pipeline;
+        VkBuffer        vertex_buffer;
     };
 
 public:
@@ -1417,7 +1503,8 @@ public:
             description.color_blend_info = get_color_no_blend_state_descr({color_blend_attachment});
 
             description.dynamic_state_info = dynamic_state_desc({VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR});
-            description.vertex_input_info = get_empty_vertex_input_state();
+            description.vertex_input_info.binding_descriptions = {get_per_vertex_binding_description<vertex>(0)};
+            description.vertex_input_info.attrib_descriptions  = get_attrib_description<vertex>(0);
             description.input_assembly_info = get_input_assemly_state(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE);
             description.multisample_info = get_disabled_multisample_info();
             description.rasterization_info = get_simple_rasterization_info(VK_POLYGON_MODE_FILL, 1.f);
@@ -1505,6 +1592,39 @@ public:
             swapchain_image_available.push_back(s2);
         }
 
+        vk_buffer vertex_bffr;
+        {
+            buffer_desc description{};
+            description.parent = device;
+            description.queue_fam_indices = {find_queue_family(phys_device, surface).graphics_fam_index.value()};
+            description.size = sizeof(vertex) * TRIANGLE_VERTICES.size();
+            description.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+            if(vertex_bffr.init(description))
+                throw std::runtime_error("Failed to init vertex buffer, kid");
+
+
+            VkMemoryAllocateInfo alloc_info = get_malloc_info(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            vertex_bffr, phys_device);
+            VkDeviceMemory buffer_memory;
+            if(vkAllocateMemory(device, &alloc_info, nullptr, &buffer_memory))
+                throw std::runtime_error("Failed to allocate buffer memory");
+            vkBindBufferMemory(device, vertex_bffr, buffer_memory, 0);
+            /*Since this memory is allocated specifically for this the vertex buffer,
+            the offset is simply 0. If the offset is non-zero, then it is required to be divisible by mem_reqs.alignment.*/
+
+            DESTROY_QUEUE.push_back([=]()mutable
+            {
+                vertex_bffr.destroy();
+                vkFreeMemory(device, buffer_memory, nullptr);
+            });
+
+            void* mem_ptr;
+            vkMapMemory(device, buffer_memory, 0, vertex_bffr.get_description().size, 0, &mem_ptr);
+            memcpy(mem_ptr, TRIANGLE_VERTICES.data(), vertex_bffr.get_description().size);
+            vkUnmapMemory(device, buffer_memory);
+        }
+
+
         GLOBALS.instance          = instance;
         GLOBALS.device            = device;
         GLOBALS.fam_indices       = find_queue_family(phys_device, surface);
@@ -1518,6 +1638,7 @@ public:
         GLOBALS.swp_framebuffers  = framebuffers;
         GLOBALS.swp_view          = swapchain_image_views;
         GLOBALS.surface           = surface;
+        GLOBALS.vertex_buffer     = vertex_bffr;
     }
 
     //run this inside the render loop
@@ -1534,7 +1655,7 @@ public:
         {
             glfwGetFramebufferSize(GLFW_INTERFACE.WINDOW_PTR, &width, &height);
         }
-        
+
         auto& G = GLOBALS;
 
         vkDeviceWaitIdle(G.device);
@@ -1650,7 +1771,7 @@ public:
         data.framebuffer = G.framebuffers[image_index];
         data.renderpass  = G.renderpass;
         data.graphics_pipeline = G.graphics_pipeline;
-
+        data.vertex_buffer     = G.vertex_buffer;
 
         if(record_command_buffer(IDX.cmdbuffer, data))
             throw std::runtime_error("Failed to record");
@@ -1690,9 +1811,11 @@ public:
         
         vkCmdBeginRenderPass(cmd_buffer, &renderpass_info, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline);
+        const VkDeviceSize buffer_offset = 0;
+        vkCmdBindVertexBuffers(cmd_buffer, 0, 1, &data.vertex_buffer, &buffer_offset);
         vkCmdSetViewport(cmd_buffer, 0, 1, &data.dynamic_viewport);
         vkCmdSetScissor(cmd_buffer, 0, 1, &data.dynamic_scissor);
-        vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
+        vkCmdDraw(cmd_buffer, static_cast<uint32_t>(TRIANGLE_VERTICES.size()), 1, 0, 0);
         vkCmdEndRenderPass(cmd_buffer);
 
         err = vkEndCommandBuffer(cmd_buffer);
@@ -1727,6 +1850,36 @@ public:
         GLFW_INTERFACE.terminate(); //So terminating GLFW without terminating all vulkan objects will cause the swapchain to segfault! all this headache for this?
     }
 private:
+    VkMemoryAllocateInfo get_malloc_info(uint32_t memory_type_bitmask, const vk_buffer buffer, VkPhysicalDevice phys_dev)
+    {
+        VkMemoryAllocateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        VkMemoryRequirements mem_reqs;
+        vkGetBufferMemoryRequirements(buffer.get_description().parent, buffer, &mem_reqs);
+        info.memoryTypeIndex = get_memory_type_index(memory_type_bitmask, mem_reqs, phys_dev);
+        info.allocationSize  = mem_reqs.size;
+        info.pNext = nullptr;
+        return info;
+    }
+    //determines index in physical device memory properties for this buffer's requirements with a user-defined bitmask
+    uint32_t get_memory_type_index(uint32_t memory_type_bitmask, VkMemoryRequirements mem_reqs, VkPhysicalDevice phys_dev)
+    {
+        VkPhysicalDeviceMemoryProperties mem_properties;
+        vkGetPhysicalDeviceMemoryProperties(phys_dev, &mem_properties);
+
+        //from the spec
+        /*memoryTypeBits is a bitmask and contains one bit set for every supported memory type for the resource.
+        Bit i is set if and only if the memory type i in the VkPhysicalDeviceMemoryProperties structure for the physical
+        device is supported for the resource.*/
+
+        for(size_t i = 0; i < mem_properties.memoryTypeCount; ++i)
+        {
+            if((mem_reqs.memoryTypeBits & (0b1 << i)) && ((mem_properties.memoryTypes[i].propertyFlags & memory_type_bitmask) 
+            == memory_type_bitmask))
+                return i;
+        }
+        throw std::runtime_error("Failed to find memory index for buffer");
+    }
     static VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFW_window_interface glfw_interface)
     {
         if(surface_capabilities.currentExtent.width != VK_UINT32_MAX) 
@@ -1850,6 +2003,7 @@ private:
     };
     struct frame_data
     {
+        VkBuffer                       vertex_buffer;
         VkDevice                              device;
         VkSwapchainKHR                     swapchain;
         VkQueue                       graphics_queue;
@@ -1863,6 +2017,7 @@ private:
 
     struct globals
     {
+        vk_buffer                      vertex_buffer;
         vk_surface                           surface;
         vk_instance                         instance;
         vk_device                             device;
@@ -1900,6 +2055,7 @@ private:
             data.indexed_data[i].rendering_finished = G.rendering_end[i];
             data.indexed_data[i].swapchain_image_available = G.image_available[i];
         }
+        data.vertex_buffer = G.vertex_buffer;
         return data;
     }
 
