@@ -200,7 +200,6 @@ std::vector<VkQueueFamilyProperties> get_queue_properties(VkPhysicalDevice devic
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
     std::vector<VkQueueFamilyProperties> properties(count);
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, properties.data());
-
     return properties;
 }
 std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice device)
@@ -317,9 +316,15 @@ public:
 };
 
 
-struct queue_family_indices //Stores indices of queue families that support support various operations
+struct queue_fam_property
 {
-    std::optional<uint32_t> graphics_fam_index, present_fam_index;
+    uint32_t           index;
+    VkQueueFlags       flags;
+    uint32_t max_queue_count;
+};
+struct queue_families //Stores indices of queue families that support support various operations
+{
+    std::optional<queue_fam_property> graphics_fam, present_fam, dedicated_transfer_fam;
 };
 struct extension_info
 {
@@ -364,8 +369,9 @@ struct surface_desc
 };
 enum   queue_support_flag_bits
 {
-    GRAPHICS_BIT = 0b0001,
-    PRESENT_BIT  = 0b0010
+    GRAPHICS_BIT           = 0b0001,
+    PRESENT_BIT            = 0b0010,
+    DEDICATED_TRANSFER_BIT = 0b0100
 };
 struct device_queue //Stores family index, count, uses, and priority of a logical device queue 
 {
@@ -875,6 +881,15 @@ struct buffer_desc
     }
 };
 
+//queues are a different kind of object from vk_hndl, since they describe themselves to you instead of the other way around
+struct queue_desc
+{
+    VkDevice parent;
+
+    uint32_t family_index;
+    uint32_t index_in_family;
+};
+
 VkPipelineVertexInputStateCreateInfo get_empty_vertex_input_state()
 {
     VkPipelineVertexInputStateCreateInfo info{};
@@ -973,31 +988,40 @@ renderpass_desc get_simple_renderpass_description(swapchain_features swp_feature
 
     return description;
 }
-std::vector<device_queue> get_device_queues(queue_family_indices fam_indices)
+std::vector<device_queue> get_device_queues(queue_families fam_indices)
 {
-    std::set<uint32_t> indices = {fam_indices.graphics_fam_index.value(), fam_indices.present_fam_index.value()};
-
+    std::set<uint32_t> indices = {fam_indices.graphics_fam.value().index, fam_indices.present_fam.value().index,
+    fam_indices.dedicated_transfer_fam.has_value() ? fam_indices.dedicated_transfer_fam.value().index : 
+    fam_indices.graphics_fam.value().index}; //if dedicated transfer has no value, this will be ignored
+    
     std::vector<device_queue> device_queues;
     
     for(const auto& index: indices)
     {
         device_queue queue;
-        queue.count = 1, queue.family_index = index; //FIXME chek that count isn't too big
-        if(index == fam_indices.graphics_fam_index)
+        queue.family_index = index; //FIXME chek that count isn't too big
+        queue.count = 1;
+        if(fam_indices.dedicated_transfer_fam.has_value() && index == fam_indices.dedicated_transfer_fam.value().index)
+            queue.flags |= DEDICATED_TRANSFER_BIT;
+        if(index == fam_indices.graphics_fam.value().index)
         {
             queue.flags |= GRAPHICS_BIT;
+            queue.count += fam_indices.dedicated_transfer_fam.has_value() ? 0 : 1;
+            queue.count = std::clamp(queue.count, (uint32_t)0, fam_indices.graphics_fam.value().max_queue_count);
         }
-        if(index == fam_indices.present_fam_index)
-        {
+        if(index == fam_indices.present_fam.value().index)
             queue.flags |= PRESENT_BIT;
-        }
         device_queues.push_back(queue);
     }
     return device_queues;
 }
-bool is_complete(queue_family_indices indices)
+bool is_adequate(queue_families indices)
 {
-    return indices.graphics_fam_index.has_value() && indices.present_fam_index.has_value();
+    return indices.graphics_fam.has_value() && indices.present_fam.has_value();
+}
+bool is_complete(queue_families indices)
+{
+    return is_adequate(indices) && indices.dedicated_transfer_fam.has_value();
 }
 swapchain_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 {
@@ -1028,19 +1052,39 @@ swapchain_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceK
 }
 //Attempts to find a complete queue family in phys_device.
 //Be warned that this function may return indices that do not pass is_complete().
-queue_family_indices find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
+queue_families find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 {
-    const auto queue_families = get_queue_properties(phys_device);
-    queue_family_indices indices;
-    for(size_t i = 0; i < queue_families.size(); i++)
+    const auto queue_family_prperties = get_queue_properties(phys_device);
+
+    queue_families indices;
+
+    for(size_t i = 0; i < queue_family_prperties.size(); i++)
     {
         uint32_t i32 = static_cast<uint32_t>(i);
-        if(queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-            indices.graphics_fam_index = i32;
+        if(queue_family_prperties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+        {
+            indices.graphics_fam = queue_fam_property{};
+            indices.graphics_fam.value().index = i32;   //implicit transfer family
+            indices.graphics_fam.value().flags = queue_family_prperties[i].queueFlags;
+            indices.graphics_fam.value().max_queue_count = queue_family_prperties[i].queueCount;
+        }
+        else if((queue_family_prperties[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && !(queue_family_prperties[i].queueFlags & VK_QUEUE_COMPUTE_BIT))
+        {
+            indices.dedicated_transfer_fam = queue_fam_property{};
+            indices.dedicated_transfer_fam.value().index = i32;
+            indices.dedicated_transfer_fam.value().flags = queue_family_prperties[i].queueFlags;
+            indices.dedicated_transfer_fam.value().max_queue_count = queue_family_prperties[i].queueCount;
+        }
         VkBool32 supports_surface = false;
         vkGetPhysicalDeviceSurfaceSupportKHR(phys_device, i32, surface, &supports_surface);
         if(supports_surface)
-            indices.present_fam_index = i32;
+        {
+            indices.present_fam = queue_fam_property{};
+            indices.present_fam.value().index = i32;
+            indices.present_fam.value().flags = queue_family_prperties[i].queueFlags;
+            indices.present_fam.value().max_queue_count = queue_family_prperties[i].queueCount;
+        }
+        
         if(is_complete(indices))
             break;
     }
@@ -1048,7 +1092,10 @@ queue_family_indices find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKH
 }
 bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 {
-    queue_family_indices indices = find_queue_family(phys_device, surface);
+    queue_families indices = find_queue_family(phys_device, surface);
+
+    if(!is_adequate(indices))
+        throw std::runtime_error("incomplete family indices");
 
     auto avl_names = get_extension_names(phys_device);
     
@@ -1059,7 +1106,7 @@ bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
     
     bool supports_swapchain = !(device_support.surface_formats.empty() || device_support.surface_present_modes.empty());
 
-    return extensions_supported && is_complete(indices) && supports_swapchain;
+    return extensions_supported && is_adequate(indices) && supports_swapchain;
 }
 
 class vk_instance          : public vk_hndl<VkInstance, instance_desc>
@@ -1553,7 +1600,7 @@ public:
         {
             cmd_pool_desc description;
             description.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-            description.queue_fam_index = find_queue_family(phys_device, surface).graphics_fam_index.value();
+            description.queue_fam_index = find_queue_family(phys_device, surface).graphics_fam.value().index;
             description.parent = device;
             if (cmd_pool.init(description))
                 throw std::runtime_error("Failed to create command pool");    
@@ -1592,36 +1639,50 @@ public:
             swapchain_image_available.push_back(s2);
         }
 
-        vk_buffer vertex_bffr;
+        vk_buffer vertex_bffr, staging_bffr;
         {
             buffer_desc description{};
             description.parent = device;
-            description.queue_fam_indices = {find_queue_family(phys_device, surface).graphics_fam_index.value()};
+            description.queue_fam_indices = {find_queue_family(phys_device, surface).graphics_fam.value().index};
             description.size = sizeof(vertex) * TRIANGLE_VERTICES.size();
-            description.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+            description.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             if(vertex_bffr.init(description))
                 throw std::runtime_error("Failed to init vertex buffer, kid");
 
+            description.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            if(staging_bffr.init(description))
+                throw std::runtime_error("Failed to init staging buffer, kid");
 
-            VkMemoryAllocateInfo alloc_info = get_malloc_info(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VkMemoryAllocateInfo vertex_bffr_alloc_info = get_mem_alloc_info(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             vertex_bffr, phys_device);
-            VkDeviceMemory buffer_memory;
-            if(vkAllocateMemory(device, &alloc_info, nullptr, &buffer_memory))
+            
+            VkDeviceMemory vertex_buffer_memory;
+            if(vkAllocateMemory(device, &vertex_bffr_alloc_info, nullptr, &vertex_buffer_memory))
                 throw std::runtime_error("Failed to allocate buffer memory");
-            vkBindBufferMemory(device, vertex_bffr, buffer_memory, 0);
+            vkBindBufferMemory(device, vertex_bffr, vertex_buffer_memory, 0);
             /*Since this memory is allocated specifically for this the vertex buffer,
             the offset is simply 0. If the offset is non-zero, then it is required to be divisible by mem_reqs.alignment.*/
+
+            VkMemoryAllocateInfo staging_alloc_inco = get_mem_alloc_info(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | 
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, staging_bffr, phys_device);
+            VkDeviceMemory staging_buffer_memory;
+            if(vkAllocateMemory(device, &staging_alloc_inco, nullptr, &staging_buffer_memory))
+                throw std::runtime_error("Failed to allocate buffer memory");
+            vkBindBufferMemory(device, staging_bffr, staging_buffer_memory, 0);
+
 
             DESTROY_QUEUE.push_back([=]()mutable
             {
                 vertex_bffr.destroy();
-                vkFreeMemory(device, buffer_memory, nullptr);
+                staging_bffr.destroy();
+                vkFreeMemory(device, vertex_buffer_memory, nullptr);
+                vkFreeMemory(device, staging_buffer_memory, nullptr);
             });
 
             void* mem_ptr;
-            vkMapMemory(device, buffer_memory, 0, vertex_bffr.get_description().size, 0, &mem_ptr);
+            vkMapMemory(device, staging_buffer_memory, 0, vertex_bffr.get_description().size, 0, &mem_ptr);
             memcpy(mem_ptr, TRIANGLE_VERTICES.data(), vertex_bffr.get_description().size);
-            vkUnmapMemory(device, buffer_memory);
+            vkUnmapMemory(device, staging_buffer_memory);
         }
 
 
@@ -1639,8 +1700,58 @@ public:
         GLOBALS.swp_view          = swapchain_image_views;
         GLOBALS.surface           = surface;
         GLOBALS.vertex_buffer     = vertex_bffr;
+        GLOBALS.staging_buffer    = staging_bffr;
+        for(const auto& queue : device.get_description().device_queues)
+        {
+            if(queue.flags & PRESENT_BIT)
+                vkGetDeviceQueue(device, queue.family_index, 0, &GLOBALS.present_queue);
+            if(queue.flags & GRAPHICS_BIT)
+                vkGetDeviceQueue(device, queue.family_index, 0, &GLOBALS.graphics_queue);
+        }
+        for(const auto& queue : device.get_description().device_queues)
+        {
+            if(queue.flags & DEDICATED_TRANSFER_BIT)
+            {
+                vkGetDeviceQueue(device, queue.family_index, 0, &GLOBALS.transfer_queue);
+                break;
+            }
+            if(queue.flags & GRAPHICS_BIT)
+                vkGetDeviceQueue(device, queue.family_index, queue.count - 1, &GLOBALS.transfer_queue);
+        }
+        copy_buffer();
     }
 
+    void copy_buffer()
+    {
+        /*
+            why im not using the transfer queue is because we need a whole abstraction for device queues.
+            the abstraction would give us 3 queues for present, graphics, and transfer, which may not be independent queues
+            under the hood. These queues should also know their family index and own index in that family.
+            Generally our abstractions for the lower level data has been okay so far but queues seem to be breaking this rule.
+            So, for simplicity I'm using the graphics queue with the same cmd_pool object here. 
+        */
+        const auto& G = GLOBALS;
+
+        VkCommandBufferBeginInfo begin_info{};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(G.cmd_buffers.handle[0], &begin_info);
+
+        VkBufferCopy copy_region{};
+        copy_region.size = G.vertex_buffer.get_description().size;
+        copy_region.dstOffset = copy_region.srcOffset = 0;
+        vkCmdCopyBuffer(G.cmd_buffers.handle[0], G.staging_buffer, G.vertex_buffer, 1, &copy_region);
+        if(vkEndCommandBuffer(G.cmd_buffers.handle[0]))
+            throw std::runtime_error("Failed to copy stagin buffer");
+        VkSubmitInfo submit_info{};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.pCommandBuffers = &G.cmd_buffers.handle[0];
+        submit_info.commandBufferCount = 1;
+        if(vkQueueSubmit(G.graphics_queue, 1, &submit_info, VK_NULL_HANDLE))
+            throw std::runtime_error("Failed to submit");
+            
+        vkQueueWaitIdle(G.graphics_queue);
+    }
     //run this inside the render loop
     void invoke()
     {
@@ -1725,7 +1836,7 @@ public:
     void draw()
     {
         static uint32_t frame_index = 0;
-        auto G = get_frame_data(GLOBALS);
+        auto G = get_frame_data(GLOBALS);   //TODO cache this
         frame_index = (frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
         auto IDX = G.indexed_data[frame_index];
 
@@ -1850,7 +1961,7 @@ public:
         GLFW_INTERFACE.terminate(); //So terminating GLFW without terminating all vulkan objects will cause the swapchain to segfault! all this headache for this?
     }
 private:
-    VkMemoryAllocateInfo get_malloc_info(uint32_t memory_type_bitmask, const vk_buffer buffer, VkPhysicalDevice phys_dev)
+    VkMemoryAllocateInfo get_mem_alloc_info(uint32_t memory_type_bitmask, const vk_buffer buffer, VkPhysicalDevice phys_dev)
     {
         VkMemoryAllocateInfo info{};
         info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -2017,7 +2128,11 @@ private:
 
     struct globals
     {
+        VkQueue                       graphics_queue;
+        VkQueue                       transfer_queue;
+        VkQueue                        present_queue;
         vk_buffer                      vertex_buffer;
+        vk_buffer                     staging_buffer;
         vk_surface                           surface;
         vk_instance                         instance;
         vk_device                             device;
@@ -2026,7 +2141,7 @@ private:
         std::vector<vk_image_view>          swp_view;
         vk_renderpass                     renderpass;
         vk_graphics_pipeline       graphics_pipeline;
-        queue_family_indices             fam_indices;
+        queue_families                   fam_indices;
         vk_cmd_buffers                   cmd_buffers;
         std::vector<vk_semaphore>    image_available;
         std::vector<vk_semaphore>      rendering_end;
@@ -2039,8 +2154,14 @@ private:
         frame_data data{};
         data.device = G.device;
         data.swapchain = G.swapchain;
-        vkGetDeviceQueue(G.device, G.fam_indices.graphics_fam_index.value(), 0, &data.graphics_queue);
-        vkGetDeviceQueue(G.device, G.fam_indices.present_fam_index.value(), 0, &data.present_queue); 
+        //TODO move this logic to devie_queue 
+        for(const auto& queue : G.device.get_description().device_queues)
+        {
+            if(queue.flags & GRAPHICS_BIT)
+                vkGetDeviceQueue(G.device, queue.family_index, 0, &data.graphics_queue);
+            if(queue.flags & PRESENT_BIT)
+                vkGetDeviceQueue(G.device, queue.family_index, 0, &data.present_queue);
+        }
         data.swapchain_extent = G.swapchain.get_description().features.extent;
         data.renderpass = G.renderpass;
         data.graphics_pipeline = G.graphics_pipeline.handle[0];
