@@ -1447,31 +1447,31 @@ public:
         glfwSetWindowUserPointer(GLFW_INTERFACE.WINDOW_PTR, this);
         glfwSetFramebufferSizeCallback(GLFW_INTERFACE.WINDOW_PTR, framebuffer_resize_callback);
 
-        static vk_instance instance;
+        vk_instance instance;
         if(instance.init(get_instance_description(init_info.app_name)))
             throw std::runtime_error("Failed to create instance");
 
-        DESTROY_QUEUE.push_back([=](){instance.destroy();});
+        DESTROY_QUEUE.push_back([=]()mutable{instance.destroy();});
 
         volkLoadInstance(instance);
 
         if(DEBUG_MODE)
         {
-            static vk_debug_messenger debug_messenger;
+            vk_debug_messenger debug_messenger;
             if(debug_messenger.init({instance, get_debug_create_info()}))
                 throw std::runtime_error("Failed to create debug messenger");
-            DESTROY_QUEUE.push_back([=](){debug_messenger.destroy();});
+            DESTROY_QUEUE.push_back([=]()mutable{debug_messenger.destroy();});
         }
 
-        static vk_surface surface;
+        vk_surface surface;
         if(surface.init({instance, GLFW_INTERFACE}))
             throw std::runtime_error("Failed to create surface");
 
-        DESTROY_QUEUE.push_back([=](){surface.destroy();});
+        DESTROY_QUEUE.push_back([=]()mutable{surface.destroy();});
 
         VkPhysicalDevice phys_device = pick_physical_device(instance.handle, surface.handle);
 
-        static vk_device device;
+        vk_device device;
         {
             device_desc description;
             description.device_queues      = get_device_queues(find_queue_family(phys_device, surface.handle));
@@ -1481,9 +1481,9 @@ public:
                 throw std::runtime_error("Failed to create device");
         }
 
-        DESTROY_QUEUE.push_back([=](){device.destroy();});
+        DESTROY_QUEUE.push_back([=]()mutable{device.destroy();});
 
-        static vk_swapchain swapchain;
+        vk_swapchain swapchain;
         {
             swapchain_support swp_support = get_swapchain_support(phys_device, surface);
             swapchain_features features   = get_swapchain_features(swp_support, GLFW_INTERFACE);
@@ -1495,9 +1495,9 @@ public:
             if(swapchain.init(description))
                 throw std::runtime_error("Failed to create swapchain");
         }
-
+        
         auto swapchain_images = get_swapchain_images(swapchain, device);
-        static std::vector<vk_image_view> swapchain_image_views;
+        std::vector<vk_image_view> swapchain_image_views;
         swapchain_image_views.resize(swapchain_images.size());
         for(size_t i = 0; i < swapchain_images.size(); i++)
         {
@@ -1518,17 +1518,17 @@ public:
         }
 
 
-        static vk_renderpass renderpass;
+        vk_renderpass renderpass;
         if(renderpass.init(get_simple_renderpass_description(swapchain.get_description().features, device)))
             throw std::runtime_error("Failed to create render pass");
 
-        DESTROY_QUEUE.push_back([=](){renderpass.destroy();});
+        DESTROY_QUEUE.push_back([=]()mutable{renderpass.destroy();});
 
         std::vector<char> fragment_code, vertex_code;
         read_binary_file({"shaders/"}, "triangle_frag.spv", fragment_code);
         read_binary_file({"shaders/"}, "triangle_vert.spv", vertex_code);
 
-        static vk_shader_module fragment_module, vertex_module;
+        vk_shader_module fragment_module, vertex_module;
         {
             shader_module_desc v_description, f_description;
             f_description.byte_code = fragment_code;
@@ -1537,10 +1537,10 @@ public:
             v_description.parent = f_description.parent = device;
             if(fragment_module.init(f_description) || vertex_module.init(v_description))
                 throw std::runtime_error("Failed to create shader modules");
-            DESTROY_QUEUE.push_back([=](){fragment_module.destroy(); vertex_module.destroy();});
+            DESTROY_QUEUE.push_back([=]()mutable{fragment_module.destroy(); vertex_module.destroy();});
         }
 
-        static vk_graphics_pipeline graphics_pipeline;
+        vk_graphics_pipeline graphics_pipeline;
         {
             graphics_pipeline_desc description{};
             description.shader_stages_info = get_shader_stages({vertex_module.get_description(), fragment_module.get_description()},
@@ -1574,7 +1574,7 @@ public:
             DESTROY_QUEUE.push_back([=]()mutable{graphics_pipeline.destroy(); pipeline_layout.destroy();});
         }
 
-        static std::vector<vk_framebuffer> framebuffers;
+        std::vector<vk_framebuffer> framebuffers;
         framebuffers.reserve(swapchain_image_views.size());
         for(size_t i = 0; i < swapchain_image_views.size(); i++)
         {
@@ -1596,7 +1596,7 @@ public:
             framebuffers.push_back(framebuffer);
         }
 
-        static vk_cmd_pool cmd_pool;
+        vk_cmd_pool cmd_pool;
         {
             cmd_pool_desc description;
             description.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1604,13 +1604,13 @@ public:
             description.parent = device;
             if (cmd_pool.init(description))
                 throw std::runtime_error("Failed to create command pool");    
-            DESTROY_QUEUE.push_back([=](){cmd_pool.destroy();});
+            DESTROY_QUEUE.push_back([=]()mutable{cmd_pool.destroy();});
         }
 
 
         MAX_FRAMES_IN_FLIGHT = 2;
 
-        static vk_cmd_buffers cmd_buffers;
+        vk_cmd_buffers cmd_buffers;
         {
             cmd_buffers_desc description{};
             description.buffer_count = MAX_FRAMES_IN_FLIGHT;
@@ -1618,11 +1618,11 @@ public:
             description.parent = device;
             if(cmd_buffers.init(description))
                 throw std::runtime_error("Failed to allocate command buffers");
-            DESTROY_QUEUE.push_back([=](){cmd_buffers.destroy();});
+            DESTROY_QUEUE.push_back([=]()mutable{cmd_buffers.destroy();});
         }
 
-        static std::vector<vk_fence> inflight{};
-        static std::vector<vk_semaphore> rendering_finished{}, swapchain_image_available{};
+        std::vector<vk_fence> inflight{};
+        std::vector<vk_semaphore> rendering_finished{}, swapchain_image_available{};
         inflight.reserve(MAX_FRAMES_IN_FLIGHT), rendering_finished.reserve(MAX_FRAMES_IN_FLIGHT), swapchain_image_available.reserve(MAX_FRAMES_IN_FLIGHT);
         for(size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
@@ -1749,7 +1749,7 @@ public:
         submit_info.commandBufferCount = 1;
         if(vkQueueSubmit(G.graphics_queue, 1, &submit_info, VK_NULL_HANDLE))
             throw std::runtime_error("Failed to submit");
-            
+
         vkQueueWaitIdle(G.graphics_queue);
     }
     //run this inside the render loop
@@ -1833,9 +1833,11 @@ public:
         G.swp_framebuffers = framebuffers;
         G.swp_view = img_vs;
     }
+    
+    //make it have class scope instead of global scope
+    uint32_t frame_index = 0;
     void draw()
     {
-        static uint32_t frame_index = 0;
         auto G = get_frame_data(GLOBALS);   //TODO cache this
         frame_index = (frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
         auto IDX = G.indexed_data[frame_index];
@@ -2201,7 +2203,7 @@ int main()
         ENG_ERR_LOG << e.what() << std::endl;
         return -1;
     }
-
+    
     window_interface window = instance.get_window_interface();
     while(!window.should_close())
     {
