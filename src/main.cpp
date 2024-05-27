@@ -25,8 +25,6 @@
 
 #define APP_NAME "Vulkan Prototype"
 
-constexpr uint32_t VK_UINT32_MAX = 0xFFFFFFFF;
-
 /************************************************PUBLIC STRUCTS************************************************/
 
 
