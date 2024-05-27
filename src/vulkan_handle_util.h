@@ -2,12 +2,12 @@
 
 #include <cstring>    //strcmp
 #include <algorithm> //std:clamp
+#include <limits>   //for max uint32
 
-#include "vulkan_handle.h"
+#include "vulkan_handle_description.h"
 #include "ignore.h"
 #include "eng_log.h"
-
-
+#include "debug.h"
 
 //Note for future user (me) it is a bad idea to include this header file in more than one translation unit
 //I exiled these functions here to keep clutter down and because I will eventually stop using this
@@ -385,4 +385,164 @@ inline bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
     bool supports_swapchain = !(device_support.surface_formats.empty() || device_support.surface_present_modes.empty());
 
     return extensions_supported && is_adequate(indices) && supports_swapchain;
+}
+
+
+
+//determines index in physical device memory properties for this buffer's requirements with a user-defined bitmask
+uint32_t get_memory_type_index(uint32_t memory_type_bitmask, VkMemoryRequirements mem_reqs, VkPhysicalDevice phys_dev)
+{
+    VkPhysicalDeviceMemoryProperties mem_properties;
+    vkGetPhysicalDeviceMemoryProperties(phys_dev, &mem_properties);
+
+    //from the spec
+    /*memoryTypeBits is a bitmask and contains one bit set for every supported memory type for the resource.
+    Bit i is set if and only if the memory type i in the VkPhysicalDeviceMemoryProperties structure for the physical
+    device is supported for the resource.*/
+
+    for(size_t i = 0; i < mem_properties.memoryTypeCount; ++i)
+    {
+        if((mem_reqs.memoryTypeBits & (0b1 << i)) && ((mem_properties.memoryTypes[i].propertyFlags & memory_type_bitmask) 
+        == memory_type_bitmask))
+            return i;
+    }
+    throw std::runtime_error("Failed to find memory index for buffer");
+}
+VkMemoryAllocateInfo get_mem_alloc_info(uint32_t memory_type_bitmask, VkBuffer buffer, VkDevice parent, VkPhysicalDevice phys_dev)
+{
+    VkMemoryAllocateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    VkMemoryRequirements mem_reqs;
+    vkGetBufferMemoryRequirements(parent, buffer, &mem_reqs);
+    info.memoryTypeIndex = get_memory_type_index(memory_type_bitmask, mem_reqs, phys_dev);
+    info.allocationSize  = mem_reqs.size;
+    info.pNext = nullptr;
+    return info;
+}
+VkExtent2D get_window_extent(GLFWwindow* window_ptr)
+{
+    int width, height;
+    glfwGetFramebufferSize(window_ptr, &width, &height);
+
+    VkExtent2D window_extent;
+    window_extent.height = static_cast<uint32_t>(height);
+    window_extent.width = static_cast<uint32_t>(width);
+
+    return window_extent;
+}
+VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFWwindow* window_ptr)
+{
+    if(surface_capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) 
+        return surface_capabilities.currentExtent;
+    VkExtent2D window_extent = get_window_extent(window_ptr);
+    window_extent.height = std::clamp(window_extent.height, surface_capabilities.minImageExtent.height, surface_capabilities.maxImageExtent.height);
+    window_extent.width  = std::clamp(window_extent.width, surface_capabilities.minImageExtent.width, surface_capabilities.maxImageExtent.width);
+
+    return window_extent;
+}    
+vk_handle::description::swapchain_features get_swapchain_features(vk_handle::description::swapchain_support swp_support, GLFWwindow* window_ptr)
+{
+    VkSurfaceFormatKHR surface_format = swp_support.surface_formats[0];
+    for(const auto& surface_format_candidate : swp_support.surface_formats)
+        if(surface_format_candidate.format == VK_FORMAT_B8G8R8_SRGB && surface_format_candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+            surface_format = surface_format_candidate;
+    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    for(const auto& present_mode_candidate : swp_support.surface_present_modes)
+        if(present_mode_candidate == VK_PRESENT_MODE_MAILBOX_KHR)
+            present_mode = present_mode_candidate;
+    
+    VkExtent2D extent = get_extent(swp_support.surface_capabilities, window_ptr);
+
+    return {surface_format, present_mode, extent, swp_support.surface_capabilities};
+}
+std::vector<const char*> get_glfw_required_extensions()
+{
+    uint32_t count;
+    const char** data = glfwGetRequiredInstanceExtensions(&count);
+    //Apparently pointers can function like iterators: vector(c_array, c_array + size). nice!
+    std::vector<const char*> extensions(data, data + count);
+    return extensions;
+}
+vk_handle::description::extension_info get_instance_required_extension_names()
+{
+    const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
+
+    std::vector<const char*> required_extension_names;
+    std::vector<const char*>     required_layer_names;
+
+    required_extension_names = get_glfw_required_extensions();
+//HACK hardcoding 
+    if(ENABLE_VALIDATION_LAYERS)
+    {
+        required_layer_names.push_back("VK_LAYER_KHRONOS_validation");
+        required_extension_names.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+
+    vk_handle::description::extension_info info{};
+    info.extensions = required_extension_names;
+    info.layers     =     required_layer_names;
+
+    return info;
+}
+vk_handle::description::instance_desc get_instance_description(const char* app_name)
+{
+    vk_handle::description::instance_desc description{};
+    if(DEBUG_MODE)
+        description.debug_messenger_ext = get_debug_create_info();
+    
+    //check extension support
+    const auto ext_info = get_instance_required_extension_names();
+    //first, check for extension and layer support
+    uint32_t instance_property_count;
+    vkEnumerateInstanceExtensionProperties(nullptr, &instance_property_count,
+    nullptr);
+    std::vector<VkExtensionProperties> instance_properties(instance_property_count);
+    vkEnumerateInstanceExtensionProperties(nullptr, &instance_property_count,
+    instance_properties.data());
+
+    std::vector<const char*> instance_extension_names(instance_property_count);
+    for(size_t i = 0; i < instance_property_count; i++)
+        instance_extension_names[i] = instance_properties[i].extensionName;
+
+    if(!check_support((size_t) instance_property_count, instance_extension_names.data(),
+    ext_info.extensions.data(), ext_info.extensions.size()))
+        throw std::runtime_error("Failed to find required instance extensions");
+    
+    uint32_t instance_layer_count;
+    vkEnumerateInstanceLayerProperties(&instance_layer_count, nullptr);
+    std::vector<VkLayerProperties> instance_layer_properties(instance_layer_count);
+    vkEnumerateInstanceLayerProperties(&instance_layer_count, instance_layer_properties.data());
+
+    std::vector<const char*> instance_layer_names(instance_layer_count);
+    for(size_t i = 0; i < instance_layer_count; i++)
+        instance_layer_names[i] = instance_layer_properties[i].layerName;
+
+    if(!check_support((size_t) instance_layer_count, instance_layer_names.data(),
+    ext_info.layers.data(), ext_info.layers.size()))
+        throw std::runtime_error("Failed to find required instance layers");
+
+    description.ext_info = ext_info;
+    description.app_info = get_app_info(app_name);
+    
+    return description;
+}
+VkPhysicalDevice pick_physical_device(VkInstance instance, VkSurfaceKHR surface)
+{
+    const auto phys_devices = get_physical_devices(instance);
+
+    std::vector<VkPhysicalDevice> candidates;
+
+    size_t i = 1;
+    for(const auto& device : phys_devices)
+    {
+        ENG_LOG << "Physical device "<< i++ <<" check : \n";
+        if(is_adequate(device, surface))
+            candidates.push_back(device);
+    }
+    if(candidates.empty())
+        throw std::runtime_error("Failed to find adequate physical device.");
+//TODO pick the best-performing adequate physical device
+    auto phys_device = candidates[0];
+
+    return phys_device;
 }
