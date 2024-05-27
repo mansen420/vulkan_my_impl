@@ -217,7 +217,6 @@ std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice dev
 }
 
 
-
 //only call GLFW functions here
 class GLFW_window_interface
 {
