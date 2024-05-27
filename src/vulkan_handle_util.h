@@ -9,6 +9,8 @@
 #include "eng_log.h"
 #include "debug.h"
 
+#define INFORM(MSG) ENG_LOG << MSG << '\n'
+
 //Note for future user (me) it is a bad idea to include this header file in more than one translation unit
 //I exiled these functions here to keep clutter down and because I will eventually stop using this
 //this is nothing more than a code dump, k?
@@ -100,12 +102,12 @@ inline bool check_support(const size_t available_name_count, const char* const* 
         return true;
     if(available_name_count == 0)
     {
-        ENG_LOG << "WARNING : using a zero-sized array\n";
+        INFORM("WARNING : using a zero-sized array");
         return false;
     }
     if(available_names == nullptr || required_names == nullptr)
     {
-        ENG_ERR_LOG << "WARNING : using nullptr\n";
+        INFORM("WARNING : using nullptr");
         return false;
     }
     bool result = true;
@@ -116,14 +118,14 @@ inline bool check_support(const size_t available_name_count, const char* const* 
         {
             if(strcmp(required_names[i], available_names[j]) == 0)
             {
-                ENG_LOG << required_names[i] << " SUPPORTED.\n";
+                INFORM(required_names[i] << " SUPPORTED.");
                 found = true;
                 break;
             }
         }
         result &= found;
         if(!found)
-            ENG_LOG << required_names[i] << " NOT SUPPORTED.\n";
+            INFORM(required_names[i] << " NOT SUPPORTED.");
     }
     return result;
 };
@@ -534,7 +536,7 @@ inline VkPhysicalDevice pick_physical_device(VkInstance instance, VkSurfaceKHR s
     size_t i = 1;
     for(const auto& device : phys_devices)
     {
-        ENG_LOG << "Physical device "<< i++ <<" check : \n";
+        INFORM("Physical device "<< i++ <<" check :");
         if(is_adequate(device, surface))
             candidates.push_back(device);
     }

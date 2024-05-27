@@ -800,7 +800,7 @@ private:
 /************************************************APPLICATION************************************************/
 
 
-int main()
+/*int main()
 {
     vulkan_glfw_interface instance;
     vulkan_communication_instance_init_info init_info{{800, 600, "Vulkan Prototype"}, "Vulkan Prototype"};
@@ -824,4 +824,4 @@ int main()
     instance.terminate();
 
     return 0;    
-}
+}*/
