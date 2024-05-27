@@ -388,9 +388,8 @@ inline bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 }
 
 
-
 //determines index in physical device memory properties for this buffer's requirements with a user-defined bitmask
-uint32_t get_memory_type_index(uint32_t memory_type_bitmask, VkMemoryRequirements mem_reqs, VkPhysicalDevice phys_dev)
+inline uint32_t get_memory_type_index(uint32_t memory_type_bitmask, VkMemoryRequirements mem_reqs, VkPhysicalDevice phys_dev)
 {
     VkPhysicalDeviceMemoryProperties mem_properties;
     vkGetPhysicalDeviceMemoryProperties(phys_dev, &mem_properties);
@@ -408,7 +407,7 @@ uint32_t get_memory_type_index(uint32_t memory_type_bitmask, VkMemoryRequirement
     }
     throw std::runtime_error("Failed to find memory index for buffer");
 }
-VkMemoryAllocateInfo get_mem_alloc_info(uint32_t memory_type_bitmask, VkBuffer buffer, VkDevice parent, VkPhysicalDevice phys_dev)
+inline VkMemoryAllocateInfo get_mem_alloc_info(uint32_t memory_type_bitmask, VkBuffer buffer, VkDevice parent, VkPhysicalDevice phys_dev)
 {
     VkMemoryAllocateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -419,7 +418,7 @@ VkMemoryAllocateInfo get_mem_alloc_info(uint32_t memory_type_bitmask, VkBuffer b
     info.pNext = nullptr;
     return info;
 }
-VkExtent2D get_window_extent(GLFWwindow* window_ptr)
+inline VkExtent2D get_window_extent(GLFWwindow* window_ptr)
 {
     int width, height;
     glfwGetFramebufferSize(window_ptr, &width, &height);
@@ -430,7 +429,7 @@ VkExtent2D get_window_extent(GLFWwindow* window_ptr)
 
     return window_extent;
 }
-VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFWwindow* window_ptr)
+inline VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFWwindow* window_ptr)
 {
     if(surface_capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) 
         return surface_capabilities.currentExtent;
@@ -440,7 +439,7 @@ VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFWwindow*
 
     return window_extent;
 }    
-vk_handle::description::swapchain_features get_swapchain_features(vk_handle::description::swapchain_support swp_support, GLFWwindow* window_ptr)
+inline vk_handle::description::swapchain_features get_swapchain_features(vk_handle::description::swapchain_support swp_support, GLFWwindow* window_ptr)
 {
     VkSurfaceFormatKHR surface_format = swp_support.surface_formats[0];
     for(const auto& surface_format_candidate : swp_support.surface_formats)
@@ -455,7 +454,7 @@ vk_handle::description::swapchain_features get_swapchain_features(vk_handle::des
 
     return {surface_format, present_mode, extent, swp_support.surface_capabilities};
 }
-std::vector<const char*> get_glfw_required_extensions()
+inline std::vector<const char*> get_glfw_required_extensions()
 {
     uint32_t count;
     const char** data = glfwGetRequiredInstanceExtensions(&count);
@@ -463,7 +462,7 @@ std::vector<const char*> get_glfw_required_extensions()
     std::vector<const char*> extensions(data, data + count);
     return extensions;
 }
-vk_handle::description::extension_info get_instance_required_extension_names()
+inline vk_handle::description::extension_info get_instance_required_extension_names()
 {
     const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
 
@@ -484,7 +483,7 @@ vk_handle::description::extension_info get_instance_required_extension_names()
 
     return info;
 }
-vk_handle::description::instance_desc get_instance_description(const char* app_name)
+inline vk_handle::description::instance_desc get_instance_description(const char* app_name)
 {
     vk_handle::description::instance_desc description{};
     if(DEBUG_MODE)
@@ -526,7 +525,7 @@ vk_handle::description::instance_desc get_instance_description(const char* app_n
     
     return description;
 }
-VkPhysicalDevice pick_physical_device(VkInstance instance, VkSurfaceKHR surface)
+inline VkPhysicalDevice pick_physical_device(VkInstance instance, VkSurfaceKHR surface)
 {
     const auto phys_devices = get_physical_devices(instance);
 

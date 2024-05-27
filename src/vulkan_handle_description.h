@@ -1,7 +1,6 @@
 #pragma once
 
 #include "volk.h"
-#include "GLFW/glfw3.h"
 
 #include <optional>
 #include <vector>
@@ -61,6 +60,7 @@ namespace vk_handle
         struct surface_desc
         {
             VkInstance parent;
+            struct ::GLFWwindow;
             GLFWwindow* glfw_interface;
         };
         enum   queue_support_flag_bits
