@@ -7,7 +7,7 @@
 #include <set>
 #include <array>
 #include <stdexcept>
-
+#include <string>
 
 namespace vk_handle
 {
@@ -21,16 +21,16 @@ namespace vk_handle
         };
         struct queue_families //Stores indices of queue families that support support various operations
         {
-            std::optional<queue_fam_property> graphics_fam, present_fam, dedicated_transfer_fam;
+            std::optional<queue_fam_property> graphics_fam, present_fam, dedicated_transfer_fam, compute_fam;
         };
-        struct extension_info
+        struct instance_extensions
         {
-            std::vector<const char*> extensions;
-            std::vector<const char*> layers;
+            std::vector<std::string> extensions;
+            std::vector<std::string> layers;
         };
         struct instance_desc
         {
-            extension_info ext_info;
+            instance_extensions ext_info;
             VkApplicationInfo app_info{};
             std::optional<VkInstanceCreateFlags> flags;
             std::optional<VkDebugUtilsMessengerCreateInfoEXT> debug_messenger_ext;
@@ -40,13 +40,28 @@ namespace vk_handle
                 info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
                 info.pApplicationInfo = &app_info;
                 info.enabledExtensionCount = static_cast<uint32_t>(ext_info.extensions.size());
-                info.ppEnabledExtensionNames = ext_info.extensions.data();
+
+                extension_names.reserve(ext_info.extensions.size());
+                for(auto& name : ext_info.extensions)
+                    extension_names.push_back(name.c_str());
+
+                info.ppEnabledExtensionNames = extension_names.data();
+
                 info.enabledLayerCount = static_cast<uint32_t>(ext_info.layers.size());
-                info.ppEnabledLayerNames = ext_info.layers.data();
+
+                layer_names.reserve(ext_info.layers.size());
+                for(auto& name : ext_info.layers)
+                    layer_names.push_back(name.c_str());
+                 
+                info.ppEnabledLayerNames = layer_names.data();
+
                 info.flags = flags.value_or(0);
                 info.pNext = debug_messenger_ext.has_value() ? &debug_messenger_ext.value() : nullptr;
                 return info;
             }
+            private:
+            std::vector<const char*> extension_names;
+            std::vector<const char*> layer_names;
         };
         struct debug_messenger_desc
         {
@@ -67,22 +82,26 @@ namespace vk_handle
         {
             GRAPHICS_BIT           = 0b0001,
             PRESENT_BIT            = 0b0010,
-            DEDICATED_TRANSFER_BIT = 0b0100
+            TRANSFER_BIT           = 0b0100,
+            COMPUTE_BIT            = 0b1000
         };
-        struct device_queue //Stores family index, count, uses, and priority of a logical device queue 
+        struct device_queue  
         {
-            uint32_t family_index;
-            uint32_t        count;
-            uint32_t        flags;
-            float        priority;
+            uint32_t           family_index;
+            VkQueueFlags queue_family_flags;
+            float                  priority;
+
+            uint32_t           count;
+            uint32_t           flags;
         };
         struct device_desc
         {
             VkPhysicalDevice phys_device;
-            std::vector<device_queue>     device_queues;
-            std::vector<const char*> enabled_extensions;
+            std::vector<device_queue>     device_queues{};
+            std::vector<std::string> enabled_extensions{};
             VkPhysicalDeviceFeatures   enabled_features{};
 
+            
             VkDeviceCreateInfo get_create_info()
             {
                 VkDeviceCreateInfo info{};
@@ -92,6 +111,10 @@ namespace vk_handle
                 {
                     VkDeviceQueueCreateInfo create_info{};
                     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+                    /*
+                        per the spec :
+                        The queueFamilyIndex member of each element of pQueueCreateInfos must be unique within pQueueCreateInfos
+                    */
                     create_info.queueCount = queue.count, create_info.queueFamilyIndex = queue.family_index;
                     create_info.pQueuePriorities = &queue.priority;
 
@@ -99,7 +122,13 @@ namespace vk_handle
                 }
 
                 info.enabledExtensionCount   = static_cast<uint32_t>(enabled_extensions.size());
-                info.ppEnabledExtensionNames = enabled_extensions.data();
+
+                //TODO factor thus out
+                extension_names.reserve(enabled_extensions.size());
+                for(auto& name : enabled_extensions)
+                    extension_names.push_back(name.c_str());
+
+                info.ppEnabledExtensionNames = extension_names.data();
 
                 info.enabledLayerCount = 0;
 
@@ -111,9 +140,10 @@ namespace vk_handle
                 return info;
             }
         private:
+            std::vector<const char*> extension_names;
             std::vector<VkDeviceQueueCreateInfo> queue_create_infos;
         };
-        struct swapchain_support
+        struct surface_support
         {
             VkSurfaceCapabilitiesKHR       surface_capabilities;
             std::vector<VkSurfaceFormatKHR>     surface_formats;

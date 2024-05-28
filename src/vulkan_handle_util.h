@@ -3,17 +3,19 @@
 #include <cstring>    //strcmp
 #include <algorithm> //std:clamp
 #include <limits>   //for max uint32
+#include <string>  //std::string
 
 #include "vulkan_handle_description.h"
 #include "ignore.h"
 #include "eng_log.h"
 #include "debug.h"
 
-#define INFORM(MSG) ENG_LOG << MSG << '\n'
 
 //Note for future user (me) it is a bad idea to include this header file in more than one translation unit
 //I exiled these functions here to keep clutter down and because I will eventually stop using this
 //this is nothing more than a code dump, k?
+
+
 
 
 inline VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback_fun(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity, 
@@ -51,8 +53,9 @@ VkDebugUtilsMessageTypeFlagsEXT message_type, const VkDebugUtilsMessengerCallbac
         message_severity_text = "UNDETERMINED SEVERITY";
         break;
     }
-    ENG_ERR_LOG << "VALIDATION LAYER : " << p_callback_data->pMessage << " (SEVERITY : "<< message_severity_text << ", TYPE : "
-    << message_type_text << ')' << std::endl;
+    
+    INFORM_ERR("VALIDATION LAYER : " << p_callback_data->pMessage << " (SEVERITY : "<< message_severity_text << ", TYPE : "
+    << message_type_text << ')' << std::endl);
 
     return VK_FALSE;
 }
@@ -65,7 +68,7 @@ inline std::vector<const char*> get_physical_device_required_extension_names()
 
     return required_extension_names;
 }
-inline VkApplicationInfo get_app_info(const char* app_name)
+inline VkApplicationInfo get_app_info(const char* app_name = "No Name")
 {
     VkApplicationInfo app_info{};
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -87,7 +90,7 @@ inline VkDebugUtilsMessengerCreateInfoEXT get_debug_create_info()
 
     return create_info;
 }
-inline std::vector<VkPhysicalDevice> get_physical_devices(VkInstance instance)
+inline std::vector<VkPhysicalDevice> get_physical_device_handles(VkInstance instance)
 {
     uint32_t phys_devices_count;
     vkEnumeratePhysicalDevices(instance, &phys_devices_count, nullptr);
@@ -96,6 +99,35 @@ inline std::vector<VkPhysicalDevice> get_physical_devices(VkInstance instance)
     return phys_devices;
 }
 
+
+inline bool check_support(std::vector<std::string> available_names, std::vector<std::string> required_names)
+{
+    if(required_names.empty())
+        return true;
+    if(available_names.empty())
+    {
+        INFORM("WARNING : using a zero-sized array");
+        return false;
+    }
+    bool result = true;
+    for(const auto& name : required_names)
+    {
+        bool found = false;
+        for(const auto& candidate : available_names)
+        {
+            if(candidate == name)
+            {
+                INFORM(name << " SUPPORTED.");
+                found = true;
+                break;
+            }
+        }
+        result &= found;
+        if(!found)
+            INFORM(name << " NOT SUPPORTED.");
+    }
+    return result;
+}
 inline bool check_support(const size_t available_name_count, const char* const* available_names, const char* const* required_names, const size_t required_name_count)
 {
     if(required_name_count == 0)
@@ -133,29 +165,29 @@ inline bool check_support(const std::vector<const char*> available_names, const 
 {
     return check_support(available_names.size(), available_names.data(), required_names.data(), required_names.size());
 }
-
-inline std::vector<const char*> get_extension_names(VkPhysicalDevice device)
+inline bool check_support(const std::vector<std::string> available_names, const std::vector<const char*> required_names)
+{
+    std::vector<const char*> c_strings;
+    c_strings.reserve(available_names.size());
+    for(const auto& name : available_names)
+        c_strings.push_back(name.data());
+    return check_support(c_strings, required_names);
+}
+inline std::vector<std::string> get_extension_names(VkPhysicalDevice device)
 {
     uint32_t count;
     vkEnumerateDeviceExtensionProperties(device, nullptr, &count, nullptr);
     std::vector<VkExtensionProperties> properties(count);
     vkEnumerateDeviceExtensionProperties(device, nullptr, &count, properties.data());
 //HACK the above calls could fail
-    std::vector<const char*> property_names;
-    property_names.reserve(count); //NEVER EVER USE THE FILL CONSTRUCTOR IT HAS FUCKED ME TWICE NOW
-    for (const auto& property : properties)
-        property_names.push_back(property.extensionName);
-
+    std::vector<std::string> property_names;
+    property_names.resize(count); //NEVER EVER USE THE FILL CONSTRUCTOR IT HAS FUCKED ME TWICE NOW
+    for (size_t i = 0; i < count; ++i)
+        property_names[i] = std::string(properties[i].extensionName);
+    
     return property_names;
 }
-inline std::vector<VkQueueFamilyProperties> get_queue_properties(VkPhysicalDevice device)
-{
-    uint32_t count;
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
-    std::vector<VkQueueFamilyProperties> properties(count);
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &count, properties.data());
-    return properties;
-}
+
 inline std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice device)
 {
     //retrieve image handles. Remember : image count specified in swapchain creation is only a minimum!
@@ -279,10 +311,10 @@ inline std::vector<vk_handle::description::device_queue> get_device_queues(vk_ha
     for(const auto& index: indices)
     {
         vk_handle::description::device_queue queue;
-        queue.family_index = index; //FIXME chek that count isn't too big
+        queue.family_index = index;
         queue.count = 1;
         if(fam_indices.dedicated_transfer_fam.has_value() && index == fam_indices.dedicated_transfer_fam.value().index)
-            queue.flags |= vk_handle::description::DEDICATED_TRANSFER_BIT;
+            queue.flags |= vk_handle::description::TRANSFER_BIT;
         if(index == fam_indices.graphics_fam.value().index)
         {
             queue.flags |= vk_handle::description::GRAPHICS_BIT;
@@ -295,17 +327,9 @@ inline std::vector<vk_handle::description::device_queue> get_device_queues(vk_ha
     }
     return device_queues;
 }
-inline bool is_adequate(vk_handle::description::queue_families indices)
+inline vk_handle::description::surface_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 {
-    return indices.graphics_fam.has_value() && indices.present_fam.has_value();
-}
-inline bool is_complete(vk_handle::description::queue_families indices)
-{
-    return is_adequate(indices) && indices.dedicated_transfer_fam.has_value();
-}
-inline vk_handle::description::swapchain_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
-{
-    vk_handle::description::swapchain_support support;
+    vk_handle::description::surface_support support;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(phys_device, surface,
     &support.surface_capabilities);
 
@@ -330,65 +354,6 @@ inline vk_handle::description::swapchain_support get_swapchain_support(VkPhysica
     }
     return support;
 }
-//Attempts to find a complete queue family in phys_device.
-//Be warned that this function may return indices that do not pass is_complete().
-inline vk_handle::description::queue_families find_queue_family(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
-{
-    const auto queue_family_prperties = get_queue_properties(phys_device);
-
-    vk_handle::description::queue_families indices;
-
-    for(size_t i = 0; i < queue_family_prperties.size(); i++)
-    {
-        uint32_t i32 = static_cast<uint32_t>(i);
-        if(queue_family_prperties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
-        {
-            indices.graphics_fam = vk_handle::description::queue_fam_property{};
-            indices.graphics_fam.value().index = i32;   //implicit transfer family
-            indices.graphics_fam.value().flags = queue_family_prperties[i].queueFlags;
-            indices.graphics_fam.value().max_queue_count = queue_family_prperties[i].queueCount;
-        }
-        else if((queue_family_prperties[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && !(queue_family_prperties[i].queueFlags & VK_QUEUE_COMPUTE_BIT))
-        {
-            indices.dedicated_transfer_fam = vk_handle::description::queue_fam_property{};
-            indices.dedicated_transfer_fam.value().index = i32;
-            indices.dedicated_transfer_fam.value().flags = queue_family_prperties[i].queueFlags;
-            indices.dedicated_transfer_fam.value().max_queue_count = queue_family_prperties[i].queueCount;
-        }
-        VkBool32 supports_surface = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(phys_device, i32, surface, &supports_surface);
-        if(supports_surface)
-        {
-            indices.present_fam = vk_handle::description::queue_fam_property{};
-            indices.present_fam.value().index = i32;
-            indices.present_fam.value().flags = queue_family_prperties[i].queueFlags;
-            indices.present_fam.value().max_queue_count = queue_family_prperties[i].queueCount;
-        }
-        
-        if(is_complete(indices))
-            break;
-    }
-    return indices;
-}
-inline bool is_adequate(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
-{
-    vk_handle::description::queue_families indices = find_queue_family(phys_device, surface);
-
-    if(!is_adequate(indices))
-        throw std::runtime_error("incomplete family indices");
-
-    auto avl_names = get_extension_names(phys_device);
-    
-    auto req_names = get_physical_device_required_extension_names();
-    bool extensions_supported = check_support(avl_names, req_names);
-
-    vk_handle::description::swapchain_support device_support = get_swapchain_support(phys_device, surface);
-    
-    bool supports_swapchain = !(device_support.surface_formats.empty() || device_support.surface_present_modes.empty());
-
-    return extensions_supported && is_adequate(indices) && supports_swapchain;
-}
-
 
 //determines index in physical device memory properties for this buffer's requirements with a user-defined bitmask
 inline uint32_t get_memory_type_index(uint32_t memory_type_bitmask, VkMemoryRequirements mem_reqs, VkPhysicalDevice phys_dev)
@@ -441,7 +406,7 @@ inline VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFW
 
     return window_extent;
 }    
-inline vk_handle::description::swapchain_features get_swapchain_features(vk_handle::description::swapchain_support swp_support, GLFWwindow* window_ptr)
+inline vk_handle::description::swapchain_features get_swapchain_features(vk_handle::description::surface_support swp_support, GLFWwindow* window_ptr)
 {
     VkSurfaceFormatKHR surface_format = swp_support.surface_formats[0];
     for(const auto& surface_format_candidate : swp_support.surface_formats)
@@ -464,7 +429,8 @@ inline std::vector<const char*> get_glfw_required_extensions()
     std::vector<const char*> extensions(data, data + count);
     return extensions;
 }
-inline vk_handle::description::extension_info get_instance_required_extension_names()
+/*
+inline vk_handle::description::instance_extensions get_instance_required_extension_names()
 {
     const bool& ENABLE_VALIDATION_LAYERS = DEBUG_MODE;
 
@@ -479,13 +445,13 @@ inline vk_handle::description::extension_info get_instance_required_extension_na
         required_extension_names.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
-    vk_handle::description::extension_info info{};
+    vk_handle::description::instance_extensions info{};
     info.extensions = required_extension_names;
     info.layers     =     required_layer_names;
 
     return info;
 }
-inline vk_handle::description::instance_desc get_instance_description(const char* app_name)
+inline vk_handle::description::instance_desc get_instance_description()
 {
     vk_handle::description::instance_desc description{};
     if(DEBUG_MODE)
@@ -523,27 +489,8 @@ inline vk_handle::description::instance_desc get_instance_description(const char
         throw std::runtime_error("Failed to find required instance layers");
 
     description.ext_info = ext_info;
-    description.app_info = get_app_info(app_name);
+    description.app_info = get_app_info();
     
     return description;
 }
-inline VkPhysicalDevice pick_physical_device(VkInstance instance, VkSurfaceKHR surface)
-{
-    const auto phys_devices = get_physical_devices(instance);
-
-    std::vector<VkPhysicalDevice> candidates;
-
-    size_t i = 1;
-    for(const auto& device : phys_devices)
-    {
-        INFORM("Physical device "<< i++ <<" check :");
-        if(is_adequate(device, surface))
-            candidates.push_back(device);
-    }
-    if(candidates.empty())
-        throw std::runtime_error("Failed to find adequate physical device.");
-//TODO pick the best-performing adequate physical device
-    auto phys_device = candidates[0];
-
-    return phys_device;
-}
+*/

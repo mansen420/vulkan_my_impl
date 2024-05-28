@@ -160,7 +160,7 @@ private:
     GLFW_window_interface* glfw;
     friend class vulkan_glfw_interface;
 };
-
+/*
 //only call the vulkan API here
 class vulkan_glfw_interface
 {
@@ -198,7 +198,7 @@ public:
         glfwSetFramebufferSizeCallback(GLFW_INTERFACE.WINDOW_PTR, framebuffer_resize_callback);
 
         vk_handle::instance instance;
-        if(instance.init(get_instance_description(init_info.app_name)))
+        if(instance.init(get_instance_description()))
             throw std::runtime_error("Failed to create instance");
 
         DESTROY_QUEUE.push_back([=]()mutable{instance.destroy();});
@@ -235,7 +235,7 @@ public:
 
         vk_handle::swapchain swapchain;
         {
-            vk_handle::description::swapchain_support swp_support = get_swapchain_support(phys_device, surface);
+            vk_handle::description::surface_support swp_support = get_swapchain_support(phys_device, surface);
             vk_handle::description::swapchain_features features   = get_swapchain_features(swp_support, GLFW_INTERFACE.WINDOW_PTR);
             vk_handle::description::swapchain_desc description;
             description.device_queues = device.get_description().device_queues;
@@ -412,7 +412,7 @@ public:
             vkBindBufferMemory(device, vertex_bffr, vertex_buffer_memory, 0);
             /*Since this memory is allocated specifically for this the vertex buffer,
             the offset is simply 0. If the offset is non-zero, then it is required to be divisible by mem_reqs.alignment.*/
-
+/*
             VkMemoryAllocateInfo staging_alloc_inco = get_mem_alloc_info(VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | 
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, staging_bffr, device, phys_device);
             VkDeviceMemory staging_buffer_memory;
@@ -460,7 +460,7 @@ public:
         }
         for(const auto& queue : device.get_description().device_queues)
         {
-            if(queue.flags & vk_handle::description::DEDICATED_TRANSFER_BIT)
+            if(queue.flags & vk_handle::description::TRANSFER_BIT)
             {
                 vkGetDeviceQueue(device, queue.family_index, 0, &GLOBALS.transfer_queue);
                 break;
@@ -480,7 +480,7 @@ public:
             Generally our abstractions for the lower level data has been okay so far but queues seem to be breaking this rule.
             So, for simplicity I'm using the graphics queue with the same cmd_pool object here. 
         */
-        const auto& G = GLOBALS;
+/*       const auto& G = GLOBALS;
 
         VkCommandBufferBeginInfo begin_info{};
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -524,7 +524,7 @@ public:
         vk_handle::swapchain new_swp;
         vk_handle::description::swapchain_desc desc{};
 
-        vk_handle::description::swapchain_support support = get_swapchain_support(G.device.get_description().phys_device, G.surface);
+        vk_handle::description::surface_support support = get_swapchain_support(G.device.get_description().phys_device, G.surface);
         vk_handle::description::swapchain_features features = get_swapchain_features(support, GLFW_INTERFACE.WINDOW_PTR);
 
         desc.features = features;
@@ -796,7 +796,7 @@ private:
 
     std::vector<std::function<void()>> DESTROY_QUEUE;
 };
-
+*/
 /************************************************APPLICATION************************************************/
 
 
