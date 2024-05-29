@@ -36,7 +36,13 @@ namespace vk_handle
         operator hndl_t() const {return handle;}
 
         //record description
-        virtual VkResult init(description_t description) override {this->description = description; return init();}
+        virtual VkResult init(description_t description) override 
+        {
+            if(*this)
+                INFORM_ERR("WARNING : double initializing " << typeid(handle).name());
+            this->description = description;
+            return init();
+        }
         virtual description_t get_description() const final {return description;}
 
         vk_hndl() : description(description_t{}), handle(hndl_t{VK_NULL_HANDLE}) {}

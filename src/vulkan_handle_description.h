@@ -149,7 +149,7 @@ namespace vk_handle
             std::vector<VkSurfaceFormatKHR>     surface_formats;
             std::vector<VkPresentModeKHR> surface_present_modes;
         };
-        struct swapchain_features
+        struct surface_features
         {
             VkSurfaceFormatKHR             surface_format;
             VkPresentModeKHR                 present_mode;
@@ -160,7 +160,7 @@ namespace vk_handle
         {
             VkDevice parent;
 
-            swapchain_features             features;
+            surface_features             features;
             VkSurfaceKHR                    surface;
             std::vector<device_queue> device_queues;
 

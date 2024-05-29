@@ -3,7 +3,7 @@
 #include <memory>
 
 
-#define DEL(handle_t) [](handle_t* X)mutable{if(X){X->destroy();}}
+#define DEL(handle_t) [](handle_t* X)mutable{if(*X){X->destroy();}}
 
 template <typename handle_t> std::shared_ptr<handle_t> make_shared()
 {                                                               

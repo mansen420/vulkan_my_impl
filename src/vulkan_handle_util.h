@@ -269,7 +269,7 @@ inline std::vector<VkPipelineShaderStageCreateInfo> get_shader_stages(std::vecto
     return stage_infos;
 }
 
-inline vk_handle::description::renderpass_desc get_simple_renderpass_description(vk_handle::description::swapchain_features swp_features, VkDevice parent)
+inline vk_handle::description::renderpass_desc get_simple_renderpass_description(vk_handle::description::surface_features swp_features, VkDevice parent)
 {
     VkAttachmentDescription attachment{};
     attachment.initialLayout =       VK_IMAGE_LAYOUT_UNDEFINED;
@@ -406,7 +406,7 @@ inline VkExtent2D get_extent(VkSurfaceCapabilitiesKHR surface_capabilities, GLFW
 
     return window_extent;
 }    
-inline vk_handle::description::swapchain_features get_swapchain_features(vk_handle::description::surface_support swp_support, GLFWwindow* window_ptr)
+inline vk_handle::description::surface_features get_swapchain_features(vk_handle::description::surface_support swp_support, GLFWwindow* window_ptr)
 {
     VkSurfaceFormatKHR surface_format = swp_support.surface_formats[0];
     for(const auto& surface_format_candidate : swp_support.surface_formats)
