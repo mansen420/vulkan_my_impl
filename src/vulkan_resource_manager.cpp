@@ -132,11 +132,13 @@ struct physical_device_t
             get_physical_device_data(device.handle, device.properties, device.features, device.memory_properties,
             device.queue_fams, device.available_extensions);
             physical_devices.push_back(device);
+            INFORM("Physical device determined : " << device.properties.deviceName);
         }
         return physical_devices;
     }
     static bool supports_extensions(physical_device_t device, std::vector<std::string> extensions)
     {
+        INFORM(device.properties.deviceName << " : ");
         return check_support(device.available_extensions, extensions);
     }
     static physical_device_t pick_best_physical_device(std::vector<physical_device_t> devices)
@@ -146,13 +148,22 @@ struct physical_device_t
         {
             device_memory_size.insert({get_local_memory_size(devices[i]), devices[i]});
         }
+        
+        auto picked_device = (*device_memory_size.rbegin()).second;
+        auto device_mem_size = (*device_memory_size.rbegin()).first;
         for(auto itr = device_memory_size.rbegin(); itr != device_memory_size.rend(); ++itr)
         {
             if ((*itr).second.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
             || (*itr).second.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
-                return (*itr).second;
+            {
+                picked_device = (*itr).second;
+                device_mem_size = (*itr).first;
+            }
         }
-        return (*device_memory_size.rbegin()).second;
+
+        INFORM("Picked " << picked_device.properties.deviceName << "\nWith " << device_mem_size << " Bytes of local memory.");
+
+        return picked_device;
     }
     static VkDeviceSize get_local_memory_size(physical_device_t physical_device)
     {
@@ -209,11 +220,26 @@ private:
 
 struct device_t
 {
+    //assigning to this will combine flags!
     struct family_index
     {
-        uint32_t index;
-        vk_handle::description::queue_support_flag_bits flags;
+        int index      = -1;
+        uint32_t flags =  0;
         operator uint32_t() const {return index;}
+        family_index() : index(-1), flags(0) {}
+        family_index(uint32_t index, uint32_t flags) : index(index), flags(flags) {}
+        family_index(const family_index& other)
+        {
+            *this = other;
+        }
+        family_index& operator =(const family_index& rhs)
+        {
+            if(this == &rhs)
+                return *this;
+            this->index = rhs.index;
+            this->flags |= rhs.flags;
+            return *this;
+        }
         bool operator < (const family_index& rhs)
         {
             return this->index < rhs.index;
@@ -236,12 +262,24 @@ struct device_t
     queue_t  compute_queue;
     queue_t  present_queue;
 
-    //sets the queue members of device and the value you should pass to the handle's description
-    static bool determine_queues(VkInstance instance, physical_device_t phys_device, device_t device, std::vector<vk_handle::description::device_queue>& device_queues,
-    bool throws = true)
+    static void report_device_queues( device_t device)
     {
-        auto& queue_fams = phys_device.queue_fams;
-        family_indices_t indices;
+        auto list_queue_props = [](const queue_t& q)
+        {
+            INFORM("Family index : " << q.fam_idx.index << " Index within family : " << q.index_in_family);
+        };
+        INFORM("Device queues\nGraphics Queue");
+        list_queue_props(device.graphics_queue);
+        INFORM("Compute Queue");
+        list_queue_props(device.compute_queue);
+        INFORM("Transfer Queue");
+        list_queue_props(device.transfer_queue);
+        INFORM("Present Queue");
+        list_queue_props(device.present_queue);
+    }
+    static bool find_queue_indices(VkInstance instance, device_t device, family_indices_t& indices, bool throws = true)
+    {
+        auto& queue_fams = device.phys_device.queue_fams;
 
         vk_handle::surface dummy_surface; //just to check support
 
@@ -262,7 +300,7 @@ struct device_t
                     indices.compute  = family_index{i, COMPUTE_BIT};
 
             VkBool32 supports_present;
-            vkGetPhysicalDeviceSurfaceSupportKHR(phys_device.handle, i, dummy_surface, &supports_present);
+            vkGetPhysicalDeviceSurfaceSupportKHR(device.phys_device.handle, i, dummy_surface, &supports_present);
             if(supports_present)
                 indices.present = family_index{i, PRESENT_BIT};
         }
@@ -271,7 +309,10 @@ struct device_t
         dummy_surface.destroy();
         //find fallbacks
         if(!indices.transfer.has_value())   //use a graphics queue
+        {
             indices.transfer = indices.graphics;
+            indices.transfer.value().flags = vk_handle::description::TRANSFER_BIT;
+        }
         if(!indices.compute.has_value())    //find ANY compute queue
             for(uint32_t i = 0; i < queue_fams.size(); ++i)
                 if(queue_fams[i].queueFlags & VK_QUEUE_COMPUTE_BIT)
@@ -281,14 +322,42 @@ struct device_t
                 }
         bool found_all_families = indices.compute.has_value() && indices.graphics.has_value() && indices.present.has_value() && indices.transfer.has_value();
         EXIT_IF(!found_all_families, "FAILED TO FIND QUEUE FAMILIES", DO_NOTHING);
+        return true;
+    }
+    //sets the queue members of device and the value you should pass to the handle's description
+    static bool determine_queues(VkInstance instance, device_t& device, std::vector<vk_handle::description::device_queue>& device_queues,
+    bool throws = true)
+    {
+        family_indices_t indices;
+        find_queue_indices(instance, device, indices, throws);
         //determine device queues 
         /*
         the spec states that each device queue should refer to a unique family index.
          Since the family indices above are not necessarily unique, we must check for that
         */
-        std::set<family_index> unique_indices{indices.compute.value(), indices.graphics.value(), indices.present.value(), indices.transfer.value()};
+        auto queue_fams = device.phys_device.queue_fams;
+
+        //combine non-unique indices
+        std::vector<family_index> unique_indices({indices.graphics.value(), indices.compute.value(), indices.transfer.value(), indices.present.value()});
+        for(auto itri = unique_indices.begin(); itri != unique_indices.end(); ++itri)
+        {
+            auto& index = (*itri);
+            for(auto itrj = unique_indices.begin(); itrj != unique_indices.end(); ++itrj)
+            {
+                if(itrj == itri)
+                    continue;
+                auto& candidate = itrj;
+                if(index.index == (*candidate).index)
+                {
+                    index = *candidate; //combines the flags 
+                    (*candidate).flags = 0; //"erase" candidate
+                }
+            }
+        }
         for(const auto& index : unique_indices)
         {
+            if(index.flags == 0)
+                continue;
             using namespace vk_handle::description;
             uint32_t index_queue_count = 0;
             if(index.flags & GRAPHICS_BIT)
@@ -325,6 +394,8 @@ struct device_t
             }
             vk_handle::description::device_queue device_queue{};
             device_queue.count = index_queue_count;
+            if(index.index < 0)
+                INFORM_ERR("WARNING : using negative family index");
             device_queue.family_index = index.index;
             device_queue.flags = index.flags;
             device_queue.queue_family_flags = queue_fams[index].queueFlags; //eh why not
@@ -333,17 +404,17 @@ struct device_t
         //determine priority
         for(auto& queue : device_queues)
         {
-            float priority = 0.f;
+            float priority = 0.0f;
             using namespace vk_handle::description;
             if(queue.flags & GRAPHICS_BIT)
-                priority += 1.f;
+                priority += 1.0f;
             if(queue.flags & TRANSFER_BIT)
-                priority += 0.75f;
+                priority += 0.5f;
             if(queue.flags & COMPUTE_BIT)
-                priority += 0.75f;
+                priority += 0.5f;
             if(queue.flags & PRESENT_BIT)
                 priority += 0.25f;
-            std::clamp(priority, 0.f, 1.f);
+            priority = std::clamp(priority, 0.0f, 1.0f);
             queue.priority = priority;
         }
         return true;
@@ -492,23 +563,45 @@ bool create_device(device_t& device, bool throws = true)
     description.enabled_features   = device.phys_device.features;
     description.phys_device        = device.phys_device.handle;
     description.enabled_extensions = physical_device_t::get_required_extension_names(physical_device_t::SWAPCHAIN);
-    device_t::determine_queues(VULKAN, device.phys_device, device, description.device_queues);
+    device_t::determine_queues(VULKAN, device, description.device_queues);
     EXIT_IF(device.handle.init(description), "FAILED TO INIT DEVICE", DO_NOTHING);
+    //device_t::report_device_queues(device);
+    MAIN_DESTRUCTION_QUEUE.push(DO(device.handle.destroy();));
 
     return true;
 }
 
-bool create_window(int width, int height, const char* title, window_t& window, bool throws = true)
+//FIXME when I take a copy of device (as opposed to ref) here,
+//it causes the queues to overflow (somehow this even effects the code before it)
+bool create_window(const device_t& device, int width, int height, const char* title, window_t& window, bool throws = true)
 {
+    using namespace vk_handle;
+    using namespace vk_handle::description;
+    destruction_queue local_queue;
+    local_queue.reserve_extra(3);
 
-using namespace vk_handle;
-using namespace vk_handle::description;
-
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     window.window_ptr = glfwCreateWindow(width, height, title, nullptr, nullptr);
-    surface srf;
-    EXIT_IF(srf.init({VULKAN, window.window_ptr}), "FAILED TO CREATE WINDOW", DO_NOTHING)
-    window.surface = srf;
 
+    local_queue.push(DO(glfwDestroyWindow(window.window_ptr);));
+
+    auto& srf = window.surface;
+    EXIT_IF(srf.init({VULKAN, window.window_ptr}), "FAILED TO CREATE WINDOW SURFACE", DO(local_queue.flush();))
+
+    local_queue.push(DO(srf.destroy();));
+
+    swapchain_desc desc{};
+    desc.surface = srf;
+    desc.features = get_swapchain_features(get_swapchain_support(device.phys_device.handle, srf), window.window_ptr);
+    desc.device_queues = device.handle.get_description().device_queues;
+    desc.parent = device.handle;
+    EXIT_IF(window.swapchain.init(desc), "FAILED TO CREATE SWAPCHAIN", DO(local_queue.flush();))
+
+    local_queue.push(DO(window.swapchain.destroy();));
+
+    MAIN_DESTRUCTION_QUEUE.push(DO(local_queue.flush();));
+
+    return true;
 }
 
 int main()
@@ -516,5 +609,10 @@ int main()
     init();
     device_t mydev;
     create_device(mydev);
+    device_t dev2 = mydev;
+    window_t myWindow;
+    create_window(mydev, 800, 600, "hello world", myWindow);
+    window_t mywin2;
+    create_window(mydev, 100, 100, "whatever", mywin2);
     terminate();
 }

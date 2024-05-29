@@ -200,6 +200,8 @@ namespace vk_handle
         //HACK Assumption : each device has 1 graphics queue and 1 present queue, which may be the same queue
                 for(const auto& queue : device_queues)
                 {
+                    if(queue.flags & COMPUTE_BIT)
+                        sharing_families.insert(queue.family_index);
                     if(queue.flags & GRAPHICS_BIT)
                         sharing_families.insert(queue.family_index);
                     if(queue.flags & PRESENT_BIT)
