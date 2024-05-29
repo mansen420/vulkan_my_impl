@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vulkan_handle_description.h"
+#include "debug.h"
 
 namespace vk_handle
 {
@@ -33,7 +34,6 @@ namespace vk_handle
 
         explicit operator bool()   const {return handle != hndl_t{VK_NULL_HANDLE};}
         operator hndl_t() const {return handle;}
-        operator description_t() const {return description;}
 
         //record description
         virtual VkResult init(description_t description) override {this->description = description; return init();}

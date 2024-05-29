@@ -1,13 +1,13 @@
 #include "volk.h"
 #include "GLFW/glfw3.h" //for surface
 
-#include "vulkan_handle.h"
 #include "vulkan_handle_util.h"
+#include "vulkan_handle_make_shared.h"
 #include "debug.h"
 
 #include <map>
-#include <set>
 #include <algorithm>
+
 
 //In theory, this module handles all communication with vulkan...(?)
 
@@ -24,11 +24,21 @@
 void DO_NOTHING(){}
 #define DO(STATEMENTS) [=]()mutable{STATEMENTS}
 
+struct image_t
+{
+    VkExtent2D extent;
+    VkSurfaceFormatKHR format;
+};
 struct window_t
 {
-    vk_handle::surface     surface;
-    vk_handle::swapchain swapchain;
-    GLFWwindow*         window_ptr;
+    struct window_destroyer
+    {
+        void operator()(GLFWwindow** ptr){glfwDestroyWindow(*ptr);}
+    };
+    std::shared_ptr<vk_handle::surface>     surface = make_shared<vk_handle::surface>();
+    std::shared_ptr<vk_handle::swapchain> swapchain = make_shared<vk_handle::swapchain>();
+    std::unique_ptr<GLFWwindow*, window_destroyer> window_ptr{nullptr};
+    operator bool() {return window_ptr.get() != nullptr;}
 };
 
 struct instance_t
@@ -256,7 +266,8 @@ struct device_t
         family_index     fam_idx;
     };
     physical_device_t phys_device;
-    vk_handle::device handle;
+    std::shared_ptr<vk_handle::device> handle;
+    device_t() : handle(make_shared<vk_handle::device>()){}
     queue_t graphics_queue;
     queue_t transfer_queue;
     queue_t  compute_queue;
@@ -444,7 +455,7 @@ private:
             
             /***************************************GLOBALS***************************************/
 
-destruction_queue MAIN_DESTRUCTION_QUEUE, TERMINATION_QUEUE;
+destruction_queue TERMINATION_QUEUE;
 
 vk_handle::instance VULKAN;
 std::vector<physical_device_t> PHYSICAL_DEVICES;
@@ -456,7 +467,8 @@ static bool INIT = false;
 
         /***************************************PROCEDURES***************************************/
 
-
+//TODO listen bud, you can do this. You're gonna run down every function in this file, and I mean EVERY FUNCTION, and 
+//factor out whatever you can. 'k, bud?
 
 //Aesthetic Interactive Computing Engine
 //愛子ーアイコ
@@ -535,10 +547,6 @@ using namespace vk_handle::description;
     }
 
 
-    TERMINATION_QUEUE.push(DO(MAIN_DESTRUCTION_QUEUE.flush();));
-
-    MAIN_DESTRUCTION_QUEUE.reserve_extra(25); //reserve some space for object destruction
-
     //check for swapchain support by default
     auto candidates = physical_device_t::find_physical_devices(VULKAN);
     for(const auto& candidate : candidates)
@@ -564,55 +572,41 @@ bool create_device(device_t& device, bool throws = true)
     description.phys_device        = device.phys_device.handle;
     description.enabled_extensions = physical_device_t::get_required_extension_names(physical_device_t::SWAPCHAIN);
     device_t::determine_queues(VULKAN, device, description.device_queues);
-    EXIT_IF(device.handle.init(description), "FAILED TO INIT DEVICE", DO_NOTHING);
-    //device_t::report_device_queues(device);
-    MAIN_DESTRUCTION_QUEUE.push(DO(device.handle.destroy();));
-
+    EXIT_IF(device.handle->init(), "FAILED TO INIT DEVICE", DO_NOTHING);
+    
     return true;
 }
 
-//FIXME when I take a copy of device (as opposed to ref) here,
-//it causes the queues to overflow (somehow this even effects the code before it)
 bool create_window(const device_t& device, int width, int height, const char* title, window_t& window, bool throws = true)
 {
     using namespace vk_handle;
     using namespace vk_handle::description;
-    destruction_queue local_queue;
-    local_queue.reserve_extra(3);
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    window.window_ptr = glfwCreateWindow(width, height, title, nullptr, nullptr);
 
-    local_queue.push(DO(glfwDestroyWindow(window.window_ptr);));
+    EXIT_IF(window, "DOUBLE INITIALIZING WINDOW", DO_NOTHING)
+
+    *window.window_ptr = glfwCreateWindow(width, height, title, nullptr, nullptr);
 
     auto& srf = window.surface;
-    EXIT_IF(srf.init({VULKAN, window.window_ptr}), "FAILED TO CREATE WINDOW SURFACE", DO(local_queue.flush();))
+    EXIT_IF(srf->init({VULKAN, *window.window_ptr}), "FAILED TO CREATE WINDOW SURFACE", DO_NOTHING)
 
-    local_queue.push(DO(srf.destroy();));
 
     swapchain_desc desc{};
-    desc.surface = srf;
-    desc.features = get_swapchain_features(get_swapchain_support(device.phys_device.handle, srf), window.window_ptr);
-    desc.device_queues = device.handle.get_description().device_queues;
-    desc.parent = device.handle;
-    EXIT_IF(window.swapchain.init(desc), "FAILED TO CREATE SWAPCHAIN", DO(local_queue.flush();))
+    desc.surface = *srf;
+    desc.features = get_swapchain_features(get_swapchain_support(device.phys_device.handle, *srf), *window.window_ptr);
+    desc.device_queues = device.handle->get_description().device_queues;
+    desc.parent = *device.handle;
+    EXIT_IF(window.swapchain->init(desc), "FAILED TO CREATE SWAPCHAIN", DO_NOTHING)
 
-    local_queue.push(DO(window.swapchain.destroy();));
-
-    MAIN_DESTRUCTION_QUEUE.push(DO(local_queue.flush();));
 
     return true;
 }
 
+
+//remember, this is a thin vulkan abstraction ;)
 int main()
 {
-    init();
-    device_t mydev;
-    create_device(mydev);
-    device_t dev2 = mydev;
-    window_t myWindow;
-    create_window(mydev, 800, 600, "hello world", myWindow);
-    window_t mywin2;
-    create_window(mydev, 100, 100, "whatever", mywin2);
-    terminate();
+    init(); //calling the destructor without initializing the library haha T_T
+    terminate(); 
 }
