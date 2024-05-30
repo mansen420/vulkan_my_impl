@@ -135,17 +135,18 @@ struct physical_device_t
         {
             physical_device_t device;
             device.handle = handle;
-            get_physical_device_data(device.handle, device.properties, device.features, device.memory_properties,
-            device.queue_fams, device.available_extensions);
             physical_devices.push_back(device);
-            INFORM("Physical device determined : " << device.properties.deviceName);
+            auto props = device.get_properties();
+            INFORM("Physical device determined : " << props.deviceName);
         }
         return physical_devices;
     }
     static bool supports_extensions(physical_device_t device, std::vector<std::string> extensions)
     {
-        INFORM(device.properties.deviceName << " : ");
-        return check_support(device.available_extensions, extensions);
+        auto props = device.get_properties();
+        INFORM(props.deviceName << " : ");
+        auto avlbl_ext = device.get_available_extensions();
+        return check_support(avlbl_ext, extensions);
     }
     static physical_device_t pick_best_physical_device(std::vector<physical_device_t> devices)
     {
@@ -159,33 +160,30 @@ struct physical_device_t
         auto device_mem_size = (*device_memory_size.rbegin()).first;
         for(auto itr = device_memory_size.rbegin(); itr != device_memory_size.rend(); ++itr)
         {
-            if ((*itr).second.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
-            || (*itr).second.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
+            auto props = (*itr).second.get_properties();
+            if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU
+            || props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU)
             {
                 picked_device = (*itr).second;
                 device_mem_size = (*itr).first;
             }
         }
-
-        INFORM("Picked " << picked_device.properties.deviceName << "\nWith " << device_mem_size << " Bytes of local memory.");
+        auto props = picked_device.get_properties();
+        INFORM("Picked " << props.deviceName << "\nWith " << device_mem_size << " Bytes of local memory.");
 
         return picked_device;
     }
     static VkDeviceSize get_local_memory_size(physical_device_t physical_device)
     {
         VkDeviceSize device_memory_size{};
-        for(uint32_t j = 0; j < physical_device.memory_properties.memoryHeapCount; ++j)
-            if(physical_device.memory_properties.memoryHeaps[j].flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-                device_memory_size += physical_device.memory_properties.memoryHeaps[j].size;
+        auto mem_props = physical_device.get_memory_properties();
+        for(uint32_t j = 0; j < mem_props.memoryHeapCount; ++j)
+            if(mem_props.memoryHeaps[j].flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                device_memory_size += mem_props.memoryHeaps[j].size;
         return device_memory_size;
     }
     
-    VkPhysicalDevice                     handle;
-    VkPhysicalDeviceProperties           properties;
-    VkPhysicalDeviceFeatures             features;
-    VkPhysicalDeviceMemoryProperties     memory_properties;
-    std::vector<std::string>             available_extensions;
-    std::vector<VkQueueFamilyProperties> queue_fams;
+    VkPhysicalDevice handle;
 
     enum extension_enable_flag_bits
     {
@@ -199,27 +197,46 @@ struct physical_device_t
         return names;
     }
 
-private:
-
-    static void get_physical_device_data(VkPhysicalDevice phys_device, VkPhysicalDeviceProperties& properties, VkPhysicalDeviceFeatures& features,
-    VkPhysicalDeviceMemoryProperties& memory_properties, std::vector<VkQueueFamilyProperties>& queue_fams, std::vector<std::string>& available_extensions)
+    std::vector<VkQueueFamilyProperties> get_queue_fams()
     {
-        vkGetPhysicalDeviceProperties(phys_device, &properties);
-        vkGetPhysicalDeviceFeatures(phys_device, &features);
-        vkGetPhysicalDeviceMemoryProperties(phys_device, &memory_properties);
-
+        std::vector<VkQueueFamilyProperties> queue_fams;
         uint32_t count;
-        vkEnumerateDeviceExtensionProperties(phys_device, nullptr, &count, nullptr);
+        vkGetPhysicalDeviceQueueFamilyProperties(handle, &count, nullptr);
+        queue_fams.resize(count);
+        vkGetPhysicalDeviceQueueFamilyProperties(handle, &count, queue_fams.data());
+        return queue_fams;
+    }
+    std::vector<std::string> get_available_extensions()
+    {
+        std::vector<std::string> available_extensions;
+        uint32_t count;
+        vkEnumerateDeviceExtensionProperties(handle, nullptr, &count, nullptr);
         VkExtensionProperties* ptr = new VkExtensionProperties[count];
-        vkEnumerateDeviceExtensionProperties(phys_device, nullptr, &count, ptr);
+        vkEnumerateDeviceExtensionProperties(handle, nullptr, &count, ptr);
+
         available_extensions.resize(count);
         for(size_t i = 0; i < count; ++i)
             available_extensions[i] = std::string(ptr[i].extensionName);
         delete[] ptr;
-
-        vkGetPhysicalDeviceQueueFamilyProperties(phys_device, &count, nullptr);
-        queue_fams.resize(count);
-        vkGetPhysicalDeviceQueueFamilyProperties(phys_device, &count, queue_fams.data());
+        return available_extensions;
+    }
+    VkPhysicalDeviceMemoryProperties get_memory_properties()
+    {
+        VkPhysicalDeviceMemoryProperties memory_properties;
+        vkGetPhysicalDeviceMemoryProperties(handle, &memory_properties);
+        return memory_properties;
+    }
+    VkPhysicalDeviceProperties get_properties()
+    {
+        VkPhysicalDeviceProperties f;
+        vkGetPhysicalDeviceProperties(handle, &f);
+        return f;
+    }
+    VkPhysicalDeviceFeatures get_features()
+    {
+        VkPhysicalDeviceFeatures f;
+        vkGetPhysicalDeviceFeatures(handle, &f);
+        return f;
     }
 };
 
@@ -285,7 +302,7 @@ struct device_t
     }
     static bool find_queue_indices(VkInstance instance, device_t device, family_indices_t& indices, bool throws = true)
     {
-        auto& queue_fams = device.phys_device.queue_fams;
+        auto queue_fams = device.phys_device.get_queue_fams();
 
         vk_handle::surface dummy_surface; //just to check support
 
@@ -341,7 +358,7 @@ struct device_t
         the spec states that each device queue should refer to a unique family index.
          Since the family indices above are not necessarily unique, we must check for that
         */
-        auto queue_fams = device.phys_device.queue_fams;
+        auto queue_fams = device.phys_device.get_queue_fams();
 
         //combine non-unique indices
         std::vector<family_index> unique_indices({indices.graphics.value(), indices.compute.value(), indices.transfer.value(), indices.present.value()});
@@ -433,6 +450,8 @@ struct window_t
     std::shared_ptr<vk_handle::surface>     surface{};
     std::shared_ptr<vk_handle::swapchain> swapchain{};
 
+    device_t owner;
+
     window_t& operator =(const window_t& rhs)
     {
         if(this == &rhs)
@@ -456,9 +475,42 @@ struct window_t
     operator bool() const {return window_ptr.get() != NULL;}
 
     vk_handle::description::surface_features get_features(){return swapchain->get_description().features;}
+
+    static std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice device)
+    {
+        //retrieve image handles. Remember : image count specified in swapchain creation is only a minimum!
+        uint32_t swapchain_image_count;
+        vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count,
+        nullptr);
+        std::vector<VkImage> swapchain_images(swapchain_image_count);
+        vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count,
+        swapchain_images.data());
+
+        return swapchain_images;
+    }
+};
+
+struct renderpass_t
+{
+    std::shared_ptr<vk_handle::renderpass> handle = make_shared<vk_handle::renderpass>();
+    std::vector<VkAttachmentDescription> attachments{};
+    std::vector<vk_handle::description::subpass_description> subpass_descriptions{};
+    std::vector<VkSubpassDependency> subpass_dependencies{};
+
     device_t owner;
 };
 
+struct framebuffer_t
+{
+    std::shared_ptr<vk_handle::framebuffer> handle = make_shared<vk_handle::framebuffer>();
+
+    std::vector<VkImageView> attachments;
+    uint32_t width, height;
+    std::optional<uint32_t> layers;
+    std::optional<VkFramebufferCreateFlags> flags;
+
+    renderpass_t owner;
+};
 struct destruction_queue
 {
     void reserve_extra(size_t functions)
@@ -478,7 +530,7 @@ struct destruction_queue
 private:
     std::vector<std::function<void()>> queue;
 };
-            
+       
             /***************************************GLOBALS***************************************/
 
 destruction_queue TERMINATION_QUEUE;
@@ -499,6 +551,9 @@ static bool INIT = false;
 
 //TODO implement RAII classes that wrap these bad boys up?
 //I think it would be good to ensure no double init or such shenanigans happen
+
+//Note :  on Unified devices (integrated GPU) you can and should simply access GPU memory directly, since all device-local
+//memory is host-visible. Thus, staging is not necessary.
 
 //Aesthetic Interactive Computing Engine
 //愛子ーアイコ
@@ -601,7 +656,7 @@ bool create_device(device_t& device, bool throws = true)
 {
     device.phys_device = physical_device_t::pick_best_physical_device(PHYSICAL_DEVICES);
     vk_handle::description::device_desc description{};
-    description.enabled_features   = device.phys_device.features;
+    description.enabled_features   = device.phys_device.get_features();
     description.phys_device        = device.phys_device.handle;
     description.enabled_extensions = physical_device_t::get_required_extension_names(physical_device_t::SWAPCHAIN);
     device_t::determine_queues(VULKAN, device, description.device_queues);
@@ -643,6 +698,33 @@ bool create_window(const device_t& device, int width, int height, const char* ti
     return true;
 }
 
+bool create_renderpass(const device_t& device, renderpass_t& renderpass, bool throws = true)
+{
+    vk_handle::description::renderpass_desc desc{};
+    desc.attachments = renderpass.attachments;
+    desc.parent = *device.handle;
+    desc.subpass_dependencies = renderpass.subpass_dependencies;
+    desc.subpass_descriptions = renderpass.subpass_descriptions;
+    EXIT_IF(renderpass.handle->init(desc), "FAILED TO INIT RENDERPASS", DO_NOTHING);
+    return true;
+}
+
+bool create_framebuffer(const renderpass_t& renderpass, framebuffer_t& framebuffer, bool throws = true)
+{
+    vk_handle::description::framebuffer_desc desc{};
+    desc.attachments = framebuffer.attachments;
+    desc.flags       = framebuffer.flags;
+    desc.height = framebuffer.height, desc.width = framebuffer.width;
+    desc.layers = framebuffer.layers;
+
+    framebuffer.owner = renderpass;
+    desc.renderpass = *framebuffer.owner.handle;
+    desc.parent     = *framebuffer.owner.owner.handle;
+
+    EXIT_IF(framebuffer.handle->init(desc), "FAILED TO INIT FRAMEBUFFER", DO_NOTHING);
+    return true;
+}
+
 /*
     This class initializes 3rd party dependencies as well as the vulkan instance,
     finds all physical devices in the system, and enables the vulkan validation layers in debug mode.
@@ -652,7 +734,7 @@ bool create_window(const device_t& device, int width, int height, const char* ti
 
     It is safe to copy this class; Only the last copy will actually destroy the context.
     It is also safe to call start() multiple times.
-    There is, however, only one context at any time.
+    There is, however, only one global context at any time.
 */
 class vulkan_context
 {
@@ -675,7 +757,69 @@ int main()
     vulkan_context context;
     context.start();    //this will enforce correct destruction order
     device_t mydev;
-    create_device(mydev);   
-    window_t mywin;
-    create_window(mydev, 1000, 1000, "tt", mywin);
+    create_device(mydev);
+    window_t wind;
+    create_window(mydev, 100, 100, "title", wind);
+
+    renderpass_t renderpass;
+    {
+        renderpass.attachments.resize(1);
+        renderpass.attachments[0].format = wind.get_features().surface_format.format;
+        renderpass.attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        renderpass.attachments[0].finalLayout   = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        renderpass.attachments[0].flags         = 0;
+        renderpass.attachments[0].loadOp        = VK_ATTACHMENT_LOAD_OP_CLEAR;  //beginning of the subpass
+        renderpass.attachments[0].storeOp       = VK_ATTACHMENT_STORE_OP_STORE; //end of the subpass
+        renderpass.attachments[0].samples       = VK_SAMPLE_COUNT_1_BIT;
+        renderpass.attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        renderpass.attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+        renderpass.subpass_descriptions.resize(1);
+        renderpass.subpass_descriptions[0].bind_point = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        renderpass.subpass_descriptions[0].color_attachment_refs.resize(1);
+        renderpass.subpass_descriptions[0].color_attachment_refs[0].attachment = 0; //index
+        renderpass.subpass_descriptions[0].color_attachment_refs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; //layout during subpass
+
+        renderpass.subpass_dependencies.resize(1);
+        renderpass.subpass_dependencies[0].dependencyFlags = 0;   
+        renderpass.subpass_dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        renderpass.subpass_dependencies[0].dstSubpass = 0;
+        /*
+            If stage 5 of B depends on stage 3 of A, then we specify such depedence in the src and dst stage masks.
+            Stages 1-4 of B will be executed regardless of A, but stage 5 will wait on stage 3 of A.
+            from reddit : https://www.reddit.com/r/vulkan/comments/muo5ud/subpasses_dependencies_stage_and_access_masks/
+                Access masks relate to memory availability/visibility. Somewhat suprising (at least it was to me initially), is that just because you set up an execution dependency where for example, A (the src) writes to some resource and then B (dst) reads from the resource. Even if B executes after A, that doesn't mean B will "see" the changes A has made, because of caching! It is very possible that even though A has finished, it has made its changes to a memory cache that hasn't been made available/"flushed". So in the dependency you could use
+
+                    srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT
+                    dstAccessMask=VK_ACCESS_MEMORY_READ_BIT
+
+                I don't know actually know how gpu cache structures work or are organized but I think the general idea is
+
+                    The src access mask says that the memory A writes to should be made available/"flushed" to like the shared gpu memory
+
+                    The dst access mask says that the memory/cache B reads from should first pull from the shared gpu memory
+
+                This way B is reading from up to date memory, and not stale cache data.
+            https://themaister.net/blog/2019/08/14/yet-another-blog-explaining-vulkan-synchronization/
+                srcStageMask of TOP_OF_PIPE is basically saying “wait for nothing”, or to be more precise,
+                we’re waiting for the GPU to parse all commands, which is, a complete noop. 
+                We had to parse all commands before getting to the pipeline barrier command to begin with.
+
+                As an analog to srcStageMask with TOP_OF_PIPE, for dstStageMask, using BOTTOM_OF_PIPE can be kind of useful.
+                This basically translates to “block the last stage of execution in the pipeline”. Basically, we translate 
+                this to mean “no work after this barrier is going to wait for us”. 
+            BOTTOM OF THE PIPE is the last stage of execution, TOP OF THE PIPE is the first 
+                Memory access and TOP_OF_PIPE/BOTTOM_OF_PIPE
+
+                Never use AccessMask != 0 with these stages. These stages do not perform memory accesses,
+                so any srcAccessMask and dstAccessMask combination with either stage will be meaningless,
+                and spec disallows this. TOP_OF_PIPE and BOTTOM_OF_PIPE are purely there for the sake of execution barriers,
+                not memory barriers.
+        */
+        renderpass.subpass_dependencies[0].srcStageMask  = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;            //wait for nothing
+        renderpass.subpass_dependencies[0].dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;//this is where the color attachment load op and store op happens
+        renderpass.subpass_dependencies[0].srcAccessMask = 0; //no access flags
+        renderpass.subpass_dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    }
+    create_renderpass(mydev, renderpass);      
 }
