@@ -444,7 +444,6 @@ namespace vk_handle
             VkPipelineRasterizationStateCreateInfo       rasterization_info;
             VkPipelineMultisampleStateCreateInfo           multisample_info;
             color_blend_desc                               color_blend_info;
-            std::optional<uint32_t> count;
             VkGraphicsPipelineCreateInfo get_create_info()
             {
                 VkGraphicsPipelineCreateInfo pipeline_info{};

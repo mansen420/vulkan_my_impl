@@ -11,7 +11,7 @@ target_link_libraries(${executable_name} PRIVATE glm::glm)
 target_link_libraries(${executable_name} PRIVATE glfw)
 target_link_libraries(${executable_name} PRIVATE volk)
 
-set_target_properties(${executable_name} PROPERTIES CXX_STANDARD 17)
+set_target_properties(${executable_name} PROPERTIES CXX_STANDARD 20)
 set_target_properties(${executable_name} PROPERTIES CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")

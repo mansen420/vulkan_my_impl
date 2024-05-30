@@ -674,5 +674,8 @@ int main()
 {
     vulkan_context context;
     context.start();    //this will enforce correct destruction order
-    
+    device_t mydev;
+    create_device(mydev);   
+    window_t mywin;
+    create_window(mydev, 1000, 1000, "tt", mywin);
 }

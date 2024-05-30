@@ -146,7 +146,7 @@ std::vector<VkVertexInputAttributeDescription> get_attrib_description<vertex> (u
     return descriptions;
 }
 
-
+/*
 class window_interface
 {
 public:
@@ -159,7 +159,7 @@ private:
     window_interface(GLFW_window_interface* glfw_ptr){glfw = glfw_ptr;}
     GLFW_window_interface* glfw;
     friend class vulkan_glfw_interface;
-};
+};*/
 /*
 //only call the vulkan API here
 class vulkan_glfw_interface
