@@ -291,9 +291,9 @@ namespace vk_handle
         {
             VkDevice parent;
 
-            std::vector<VkAttachmentDescription>      attachments;
-            std::vector<subpass_description> subpass_descriptions;
-            std::vector<VkSubpassDependency> subpass_dependencies;
+            std::vector<VkAttachmentDescription>      attachments{};
+            std::vector<subpass_description> subpass_descriptions{};
+            std::vector<VkSubpassDependency> subpass_dependencies{};
             VkRenderPassCreateInfo get_create_info()
             {
                 VkRenderPassCreateInfo create_info{};

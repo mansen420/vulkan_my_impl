@@ -474,16 +474,33 @@ struct window_t
     std::shared_ptr<GLFWwindow> window_ptr{NULL, [](GLFWwindow* ptr)mutable{glfwDestroyWindow(ptr);}};
     operator bool() const {return window_ptr.get() != NULL;}
 
-    vk_handle::description::surface_features get_features(){return swapchain->get_description().features;}
-
-    static std::vector<VkImage> get_swapchain_images(VkSwapchainKHR swapchain, VkDevice device)
+    vk_handle::description::surface_features get_features() const {return swapchain->get_description().features;}
+    static std::vector<std::shared_ptr<vk_handle::image_view>> get_window_attachments(const window_t& window, bool throws = true)
+    {
+        auto images = window.get_swapchain_images();
+        std::vector<std::shared_ptr<vk_handle::image_view>> attachments;
+        attachments.reserve(images.size());
+        for(auto& image : images)
+        {
+            vk_handle::description::image_view_desc desc{};
+            desc.format = window.swapchain->get_description().features.surface_format.format;
+            desc.image  = image;
+            desc.parent = *window.owner.handle;
+            auto img_view = make_shared<vk_handle::image_view>();
+            if(img_view->init(desc) && throws)
+                THROW("FAILED TO INIT SWAPCHAIN IMAGE VIEW");
+            attachments.push_back(img_view);
+        }
+        return attachments;
+    }
+    std::vector<VkImage> get_swapchain_images() const
     {
         //retrieve image handles. Remember : image count specified in swapchain creation is only a minimum!
         uint32_t swapchain_image_count;
-        vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count,
+        vkGetSwapchainImagesKHR(*owner.handle, *swapchain, &swapchain_image_count,
         nullptr);
         std::vector<VkImage> swapchain_images(swapchain_image_count);
-        vkGetSwapchainImagesKHR(device, swapchain, &swapchain_image_count,
+        vkGetSwapchainImagesKHR(*owner.handle, *swapchain, &swapchain_image_count,
         swapchain_images.data());
 
         return swapchain_images;
@@ -502,14 +519,31 @@ struct renderpass_t
 
 struct framebuffer_t
 {
-    std::shared_ptr<vk_handle::framebuffer> handle = make_shared<vk_handle::framebuffer>();
+    std::shared_ptr<vk_handle::framebuffer> handle{make_shared<vk_handle::framebuffer>()};
+    framebuffer_t() : handle(make_shared<vk_handle::framebuffer>()) {}
 
-    std::vector<VkImageView> attachments;
+    std::vector<std::shared_ptr<vk_handle::image_view>> attachments;
+
     uint32_t width, height;
     std::optional<uint32_t> layers;
     std::optional<VkFramebufferCreateFlags> flags;
 
     renderpass_t owner;
+    static std::vector<framebuffer_t> get_window_framebuffers(const window_t& window)
+    {
+        auto attachments = window_t::get_window_attachments(window);
+        std::vector<framebuffer_t> frmbffrs;
+        frmbffrs.reserve(attachments.size());
+        for(auto att : attachments)
+        {
+            framebuffer_t frm;
+            frm.height = window.get_features().extent.height, frm.width = window.get_features().extent.width;
+            frm.attachments.push_back(att);
+            frmbffrs.push_back(frm);
+        }
+        return frmbffrs;
+    }
+
 };
 struct destruction_queue
 {
@@ -530,7 +564,7 @@ struct destruction_queue
 private:
     std::vector<std::function<void()>> queue;
 };
-       
+      
             /***************************************GLOBALS***************************************/
 
 destruction_queue TERMINATION_QUEUE;
@@ -706,14 +740,20 @@ bool create_renderpass(const device_t& device, renderpass_t& renderpass, bool th
     desc.subpass_dependencies = renderpass.subpass_dependencies;
     desc.subpass_descriptions = renderpass.subpass_descriptions;
     EXIT_IF(renderpass.handle->init(desc), "FAILED TO INIT RENDERPASS", DO_NOTHING);
+    renderpass.owner = device;
     return true;
 }
 
 bool create_framebuffer(const renderpass_t& renderpass, framebuffer_t& framebuffer, bool throws = true)
 {
     vk_handle::description::framebuffer_desc desc{};
-    desc.attachments = framebuffer.attachments;
-    desc.flags       = framebuffer.flags;
+
+    EXIT_IF(framebuffer.attachments.empty(), "EMPTY FRAMEBUFFE ATTACHMENT VECTOR", DO_NOTHING)
+
+    desc.attachments.reserve(framebuffer.attachments.size());
+    for(auto att : framebuffer.attachments)
+        desc.attachments.push_back(*att);
+    desc.flags  = framebuffer.flags;
     desc.height = framebuffer.height, desc.width = framebuffer.width;
     desc.layers = framebuffer.layers;
 
@@ -722,6 +762,7 @@ bool create_framebuffer(const renderpass_t& renderpass, framebuffer_t& framebuff
     desc.parent     = *framebuffer.owner.owner.handle;
 
     EXIT_IF(framebuffer.handle->init(desc), "FAILED TO INIT FRAMEBUFFER", DO_NOTHING);
+
     return true;
 }
 
@@ -822,4 +863,14 @@ int main()
         renderpass.subpass_dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     }
     create_renderpass(mydev, renderpass);      
+
+    auto s = window_t::get_window_attachments(wind);
+    framebuffer_t f;
+    f.attachments.push_back(s[0]);
+    f.height = wind.get_features().extent.height;
+    f.width = wind.get_features().extent.width;
+    create_framebuffer(renderpass, f);
+ //   auto window_frmbffrs = framebuffer_t::get_window_framebuffers(wind);
+ //   for (auto& f : window_frmbffrs)
+ //       create_framebuffer(renderpass, f);
 }
