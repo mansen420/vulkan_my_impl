@@ -197,13 +197,8 @@ namespace vk_handle
                 create_info.clipped          =                                      clipped.value_or(VK_TRUE);
                 create_info.oldSwapchain     =                         old_swapchain.value_or(VK_NULL_HANDLE);
 
-        //HACK Assumption : each device has 1 graphics queue and 1 present queue, which may be the same queue
                 for(const auto& queue : device_queues)
                 {
-                    if(queue.flags & COMPUTE_BIT)
-                        sharing_families.insert(queue.family_index);
-                    if(queue.flags & GRAPHICS_BIT)
-                        sharing_families.insert(queue.family_index);
                     if(queue.flags & PRESENT_BIT)
                         sharing_families.insert(queue.family_index);
                 }

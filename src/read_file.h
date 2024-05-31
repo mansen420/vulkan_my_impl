@@ -49,7 +49,7 @@ inline bool read_binary_file(const char* file_path, std::vector<char>& contents)
 //Will read first match from search_paths
 inline bool read_binary_file(std::vector<const char*> search_paths, const char* filename, std::vector<char>& contents)
 {
-    bool result;
+    bool result = false;
     for(const auto& directory : search_paths)
     {
         std::string path(directory);

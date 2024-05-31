@@ -996,6 +996,7 @@ int main()
         triangle_pipeline.rasterization_state.rasterization_discard = VK_FALSE;
         triangle_pipeline.rasterization_state.depth_bias_enable = VK_FALSE;
         triangle_pipeline.rasterization_state.depth_clamp_enable = VK_FALSE;
+        triangle_pipeline.rasterization_state.front_face = VK_FRONT_FACE_CLOCKWISE;
         triangle_pipeline.rasterization_state.cull_mode = VK_CULL_MODE_NONE;
 
         std::vector<char> fragment_code, vertex_code;
