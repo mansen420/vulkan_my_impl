@@ -426,6 +426,93 @@ namespace vk_handle
                 return info;
             }
         };
+        struct input_assembly_desc
+        {
+            VkPrimitiveTopology topology;
+            VkBool32 primitive_restart_enabled;
+            VkPipelineInputAssemblyStateCreateInfo get_input_assembly_info()
+            {
+                VkPipelineInputAssemblyStateCreateInfo info{};
+                info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+                info.primitiveRestartEnable = primitive_restart_enabled;
+                info.topology = topology;
+                info.flags = 0;
+                info.pNext = nullptr;
+                return info;
+            }
+        };
+        struct multisample_desc
+        {
+            VkSampleCountFlagBits rasterization_samples;
+            VkBool32 sample_shading_enable;
+            VkPipelineMultisampleStateCreateInfo get_multisample_info()
+            {
+                VkPipelineMultisampleStateCreateInfo info{};
+                info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+                info.pNext = nullptr;
+                info.flags = 0;
+                info.sampleShadingEnable = sample_shading_enable;
+                info.rasterizationSamples = rasterization_samples;
+                return info;
+            }
+        };
+        struct rasterization_desc
+        {
+            VkBool32 rasterization_discard;
+            VkPolygonMode polygon_mode;
+            float line_width;
+            VkFrontFace front_face;
+            VkCullModeFlags cull_mode;
+            VkBool32 depth_clamp_enable;
+            VkBool32 depth_bias_enable;
+            float depth_bias_clamp, depth_bias_slope_factor, depth_bias_constant_factor;
+            VkPipelineRasterizationStateCreateInfo get_rasterization_info()
+            {
+                VkPipelineRasterizationStateCreateInfo info{};
+                info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+                info.rasterizerDiscardEnable = rasterization_discard;
+                info.polygonMode = polygon_mode;
+                info.lineWidth = line_width;
+                info.frontFace = front_face;
+                info.cullMode  = cull_mode;
+                info.depthClampEnable = depth_clamp_enable;
+                info.depthBiasEnable  = depth_bias_enable;
+                info.depthBiasClamp   = depth_bias_clamp;
+                info.depthBiasSlopeFactor = depth_bias_slope_factor;
+                info.depthBiasConstantFactor = depth_bias_constant_factor;
+                return info;
+            }
+
+        };
+        struct depth_stencil_desc
+        {
+            VkPipelineDepthStencilStateCreateInfo get_depth_stencil_info()
+            {
+                VkPipelineDepthStencilStateCreateInfo info{};
+                info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+                info.pNext = nullptr;
+                info.flags = 0;
+                return info;
+            }
+        };
+        struct shader_stage_desc
+        {
+            VkShaderModule module;
+            const char* entry_point;
+            std::optional<VkSpecializationInfo> specialization_info;
+            VkShaderStageFlagBits stage;
+            VkPipelineShaderStageCreateInfo get_shader_stage_info()
+            {
+                VkPipelineShaderStageCreateInfo info{};
+                info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                info.module = module;
+                info.pName  = entry_point;
+                info.pNext  = nullptr;
+                info.pSpecializationInfo = specialization_info.has_value() ? &specialization_info.value() : nullptr;
+                info.stage  = stage;
+                return info;
+            }
+        };
         struct graphics_pipeline_desc
         {
             VkDevice parent;
@@ -434,32 +521,48 @@ namespace vk_handle
             VkRenderPass                       renderpass;
             uint32_t                        subpass_index;
 
-            std::optional<VkPipelineCache>                           pipeline_cache;
-            std::optional<VkPipelineDepthStencilStateCreateInfo> depth_stencil_info;
-            std::vector<VkPipelineShaderStageCreateInfo> shader_stages_info;
+            std::optional<VkPipelineCache>                   pipeline_cache;
+            std::optional<depth_stencil_desc>            depth_stencil_info;
+            std::vector<shader_stage_desc>               shader_stages_info;
             vertex_input_desc                             vertex_input_info;
-            VkPipelineInputAssemblyStateCreateInfo      input_assembly_info;
+            input_assembly_desc                         input_assembly_info;
             dynamic_state_desc                           dynamic_state_info;
             viewport_state_desc                         viewport_state_info;
-            VkPipelineRasterizationStateCreateInfo       rasterization_info;
-            VkPipelineMultisampleStateCreateInfo           multisample_info;
+            rasterization_desc                           rasterization_info;
+            multisample_desc                               multisample_info;
             color_blend_desc                               color_blend_info;
             VkGraphicsPipelineCreateInfo get_create_info()
             {
                 VkGraphicsPipelineCreateInfo pipeline_info{};
                 pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-                pipeline_info.stageCount = static_cast<uint32_t>(shader_stages_info.size()), pipeline_info.pStages = shader_stages_info.data();
+                pipeline_info.stageCount = static_cast<uint32_t>(shader_stages_info.size());
+                for(auto shader : shader_stages_info)
+                    shader_stages_state.push_back(shader.get_shader_stage_info());
+
+                pipeline_info.pStages = shader_stages_state.data();
 
                 vertex_input_state = vertex_input_info.get_info();
                 pipeline_info.pVertexInputState   =   &vertex_input_state;
-                pipeline_info.pInputAssemblyState = &input_assembly_info;
+
+                input_assembly_state = input_assembly_info.get_input_assembly_info();
+                pipeline_info.pInputAssemblyState = &input_assembly_state;
 
                 viewport_state = viewport_state_info.get_info();
                 pipeline_info.pViewportState = &viewport_state;
 
-                pipeline_info.pRasterizationState =  &rasterization_info;
-                pipeline_info.pMultisampleState   =    &multisample_info;
-                pipeline_info.pDepthStencilState  =  depth_stencil_info.has_value() ? &depth_stencil_info.value() : nullptr;
+                raster_state = rasterization_info.get_rasterization_info();
+                pipeline_info.pRasterizationState =  &raster_state;
+
+                multisample_state = multisample_info.get_multisample_info();
+                pipeline_info.pMultisampleState   =    &multisample_state;
+                
+                if(depth_stencil_info.has_value())
+                {
+                    depth_stencil_state = depth_stencil_info.value().get_depth_stencil_info();
+                    pipeline_info.pDepthStencilState  =  &depth_stencil_state;
+                }
+                else
+                    pipeline_info.pDepthStencilState = nullptr;
 
                 color_blend_state = color_blend_info.get_info();
                 pipeline_info.pColorBlendState = &color_blend_state;
@@ -474,10 +577,15 @@ namespace vk_handle
                 return pipeline_info;
             }
         private:
+            std::vector<VkPipelineShaderStageCreateInfo> shader_stages_state;
+            VkPipelineDepthStencilStateCreateInfo depth_stencil_state;
+            VkPipelineRasterizationStateCreateInfo raster_state;
+            VkPipelineInputAssemblyStateCreateInfo input_assembly_state;
             VkPipelineVertexInputStateCreateInfo vertex_input_state;
             VkPipelineViewportStateCreateInfo    viewport_state;
             VkPipelineColorBlendStateCreateInfo  color_blend_state;
             VkPipelineDynamicStateCreateInfo     dynamic_state;
+            VkPipelineMultisampleStateCreateInfo multisample_state;
         };
         struct pipeline_layout_desc
         {
@@ -487,7 +595,6 @@ namespace vk_handle
             {
                 VkPipelineLayoutCreateInfo info{};
                 info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-
                 return info;        
             }
         };

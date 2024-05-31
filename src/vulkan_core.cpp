@@ -4,12 +4,13 @@
 #include "vulkan_handle_util.h"
 #include "vulkan_handle_make_shared.h"
 #include "debug.h"
+#include "read_file.h"
 
 #include <map>
 #include <algorithm>
 
 
-//In theory, this module handles all communication with vulkan...(?)
+//this module handles all communication with vulkan
 
 
             /***********************************helper interface***********************************/ 
@@ -545,6 +546,52 @@ struct framebuffer_t
     }
 
 };
+
+struct pipeline_layout_t
+{
+    std::shared_ptr<vk_handle::pipeline_layout> handle{make_shared<vk_handle::pipeline_layout>()};
+    vk_handle::description::pipeline_layout_desc description;
+
+    device_t owner;
+};
+
+struct graphics_pipeline_t
+{
+    std::shared_ptr<vk_handle::graphics_pipeline> handle{make_shared<vk_handle::graphics_pipeline>()};
+
+    renderpass_t     owner;
+    uint32_t subpass_index;
+
+    pipeline_layout_t layout;
+
+    vk_handle::description::viewport_state_desc viewport_state;
+    vk_handle::description::vertex_input_desc vertex_input_state;
+    vk_handle::description::dynamic_state_desc dynamic_state;
+    vk_handle::description::color_blend_desc color_blend_state;
+    vk_handle::description::multisample_desc ms_state;
+    vk_handle::description::rasterization_desc rasterization_state;
+    vk_handle::description::input_assembly_desc input_assembly_state;
+    std::vector<vk_handle::description::shader_stage_desc> shader_modules;
+    vk_handle::description::depth_stencil_desc depth_stencil_state;
+    VkPipelineCache pipeline_cache;
+};
+
+struct shader_module_t
+{
+    std::shared_ptr<vk_handle::shader_module> handle{make_shared<vk_handle::shader_module>()};
+
+    device_t owner;
+
+    VkShaderStageFlagBits stage;
+
+    std::vector<char> byte_code;
+};
+
+struct command_pool
+{
+    std::shared_ptr<vk_handle::cmd_pool> handle{make_shared<vk_handle::cmd_pool>()};
+};
+
 struct destruction_queue
 {
     void reserve_extra(size_t functions)
@@ -573,8 +620,6 @@ vk_handle::instance VULKAN;
 std::vector<physical_device_t> PHYSICAL_DEVICES;
 
 static bool INIT = false;
-
-            /***************************************END***************************************/
 
 
         /***************************************PROCEDURES***************************************/
@@ -678,10 +723,13 @@ using namespace vk_handle::description;
     EXIT_IF(PHYSICAL_DEVICES.size() == 0, "FAILED TO FIND PHYSICAL DEVICE", terminate);
 
     INIT = true;
-#ifdef COOL
-    ENG_LOG << "Vulkan speaking, yes?\n";
-    ENG_LOG << "This is vulkan , baby!\n";
-#endif
+
+std::vector<std::string> greetings;
+greetings.push_back("Vulkan speaking, yes?");
+greetings.push_back("This is vulkan, baby!");
+uint num = rand()%greetings.size();
+INFORM(greetings[num]);
+
     return true;
 }
 
@@ -766,6 +814,47 @@ bool create_framebuffer(const renderpass_t& renderpass, framebuffer_t& framebuff
     return true;
 }
 
+bool create_pipeline_layout(pipeline_layout_t& pipeline_layout, bool throws = true)
+{
+    pipeline_layout.description.parent = *pipeline_layout.owner.handle;
+    EXIT_IF(pipeline_layout.handle->init(pipeline_layout.description), "FAILED TO INIT PIPELINE LAYOUT", DO_NOTHING);
+    return true;
+}
+
+bool create_graphics_pipeline(graphics_pipeline_t& pipeline, bool throws = true)
+{
+    vk_handle::description::graphics_pipeline_desc description{};
+
+    description.color_blend_info = pipeline.color_blend_state;
+    description.depth_stencil_info = pipeline.depth_stencil_state;
+    description.dynamic_state_info = pipeline.dynamic_state;
+    description.input_assembly_info = pipeline.input_assembly_state;
+    description.multisample_info = pipeline.ms_state;
+    description.parent = *pipeline.owner.owner.handle;
+    description.pipeline_cache = pipeline.pipeline_cache;
+    description.pipeline_layout = *pipeline.layout.handle;
+    description.rasterization_info = pipeline.rasterization_state;
+    description.renderpass = *pipeline.owner.handle;
+    description.shader_stages_info = pipeline.shader_modules;
+    description.subpass_index = pipeline.subpass_index;
+    description.vertex_input_info = pipeline.vertex_input_state;
+    description.viewport_state_info = pipeline.viewport_state;
+
+    EXIT_IF(pipeline.handle->init({description}), "FAILED TO INIT GRAPHICS PIPELINE", DO_NOTHING);
+    return true;
+}
+
+bool create_shader_module(shader_module_t& module, bool throws = true)
+{
+    vk_handle::description::shader_module_desc description{};
+    description.byte_code = module.byte_code;
+    description.parent    = *module.owner.handle;
+    description.stage     = module.stage;
+
+    EXIT_IF(module.handle->init(description), "FAILED TO INIT SHADER MODULE", DO_NOTHING);
+
+    return true;
+}
 /*
     This class initializes 3rd party dependencies as well as the vulkan instance,
     finds all physical devices in the system, and enables the vulkan validation layers in debug mode.
@@ -791,6 +880,16 @@ public:
     }
 };
 unsigned int vulkan_context::copies = 0;
+
+void draw_frame()
+{
+
+}
+void invoke_renderpass()
+{
+    glfwPollEvents();
+    draw_frame();
+}
 
 //remember, this is a thin vulkan abstraction :>
 int main()
@@ -866,11 +965,65 @@ int main()
 
     auto s = window_t::get_window_attachments(wind);
     framebuffer_t f;
-    f.attachments.push_back(s[0]);
-    f.height = wind.get_features().extent.height;
-    f.width = wind.get_features().extent.width;
-    create_framebuffer(renderpass, f);
- //   auto window_frmbffrs = framebuffer_t::get_window_framebuffers(wind);
- //   for (auto& f : window_frmbffrs)
- //       create_framebuffer(renderpass, f);
+    auto window_frmbffrs = framebuffer_t::get_window_framebuffers(wind);
+    for (auto& f : window_frmbffrs)
+        create_framebuffer(renderpass, f);
+    graphics_pipeline_t triangle_pipeline;
+    {
+        triangle_pipeline.color_blend_state.logic_op_enabled = VK_FALSE;
+        VkPipelineColorBlendAttachmentState color_attachment{};
+        color_attachment.blendEnable = VK_FALSE;
+        color_attachment.colorWriteMask = VK_COLOR_COMPONENT_A_BIT | VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT  | VK_COLOR_COMPONENT_B_BIT;
+        triangle_pipeline.color_blend_state.attachment_states.push_back(color_attachment);
+
+        triangle_pipeline.dynamic_state.dynamic_state_list = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        
+        triangle_pipeline.input_assembly_state.primitive_restart_enabled = VK_FALSE;
+        triangle_pipeline.input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        
+        pipeline_layout_t pplt;
+        pplt.owner = mydev;
+        create_pipeline_layout(pplt);
+        triangle_pipeline.layout = pplt;
+
+        triangle_pipeline.ms_state.rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
+        triangle_pipeline.ms_state.sample_shading_enable = VK_FALSE;
+
+        triangle_pipeline.owner = renderpass;
+        triangle_pipeline.subpass_index = 0;
+        triangle_pipeline.pipeline_cache = VK_NULL_HANDLE;
+        triangle_pipeline.rasterization_state.polygon_mode = VK_POLYGON_MODE_FILL;
+        triangle_pipeline.rasterization_state.rasterization_discard = VK_FALSE;
+        triangle_pipeline.rasterization_state.depth_bias_enable = VK_FALSE;
+        triangle_pipeline.rasterization_state.depth_clamp_enable = VK_FALSE;
+        triangle_pipeline.rasterization_state.cull_mode = VK_CULL_MODE_NONE;
+
+        std::vector<char> fragment_code, vertex_code;
+        read_binary_file({"shaders/"}, "triangle_frag.spv", fragment_code);
+        read_binary_file({"shaders/"}, "triangle_vert.spv", vertex_code);
+        shader_module_t frag, vert;
+        frag.byte_code = fragment_code, vert.byte_code = vertex_code;
+        frag.owner = vert.owner = mydev;
+        frag.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        vert.stage = VK_SHADER_STAGE_VERTEX_BIT;
+
+        create_shader_module(vert);
+        create_shader_module(frag);
+
+        triangle_pipeline.shader_modules.resize(2);
+        triangle_pipeline.shader_modules[0].module = *vert.handle;
+        triangle_pipeline.shader_modules[0].stage  = vert.stage;
+        triangle_pipeline.shader_modules[1].module = *frag.handle;
+        triangle_pipeline.shader_modules[1].stage  = frag.stage;
+        triangle_pipeline.shader_modules[0].entry_point = "main";
+        triangle_pipeline.shader_modules[1].entry_point = "main";
+
+        triangle_pipeline.viewport_state.scissors.resize(1);
+        triangle_pipeline.viewport_state.viewports.resize(1);
+
+        triangle_pipeline.vertex_input_state.attrib_descriptions.resize(0);
+        triangle_pipeline.vertex_input_state.binding_descriptions.resize(0);
+        
+        create_graphics_pipeline(triangle_pipeline);
+    }
 }
