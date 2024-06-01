@@ -75,7 +75,10 @@ namespace vk_handle
         }
         void destroy()
         {
+            if(handle == handle_t{VK_NULL_HANDLE})
+                INFORM_ERR("WARNING : destroying empty handle of : " << typeid(handle).name());
             vk_handle::destroy(handle, description_record);
+            handle = handle_t{VK_NULL_HANDLE};
         }
         desc_t get_description(){return description_record;}
     };

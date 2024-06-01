@@ -53,11 +53,13 @@ VkResult vk_handle::init(VkShaderModule& handle, description::shader_module_desc
 }
 VkResult vk_handle::init(std::vector<VkPipeline>& handle, std::vector<vk_handle::description::graphics_pipeline_desc> desc)
 {
+    handle.resize(desc.size());
     std::vector<VkGraphicsPipelineCreateInfo> infos;
     infos.reserve(desc.size());
     for(auto& d : desc)
         infos.push_back(d.get_create_info());
-    return vkCreateGraphicsPipelines(desc[0].parent, desc[0].pipeline_cache.value_or(VK_NULL_HANDLE), desc.size(), infos.data(), nullptr, handle.data());
+    return vkCreateGraphicsPipelines(desc[0].parent, desc[0].pipeline_cache.value_or(VK_NULL_HANDLE), desc.size(), infos.data(),
+    nullptr, handle.data());
 }
 VkResult vk_handle::init(VkPipelineLayout& handle, description::pipeline_layout_desc desc)
 {
@@ -77,6 +79,7 @@ VkResult vk_handle::init(VkCommandPool& handle, description::cmd_pool_desc desc)
 VkResult vk_handle::init(std::vector<VkCommandBuffer>& handle, description::cmd_buffers_desc desc)
 {
     auto info = desc.get_alloc_info();
+    handle.resize(desc.buffer_count);
     return vkAllocateCommandBuffers(desc.parent, &info, handle.data());
 }
 VkResult vk_handle::init(VkSemaphore& handle, description::semaphore_desc desc)

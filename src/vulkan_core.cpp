@@ -10,6 +10,8 @@
 #include <algorithm>
 
 
+typedef unsigned int uint; //MSVC can't handle the power of pure uint
+
 //this module handles all communication with vulkan
 
 
@@ -279,8 +281,8 @@ struct device_t
         family_index     fam_idx;
     };
     physical_device_t phys_device{};
-    std::shared_ptr<vk_handle::device> handle{make_shared<vk_handle::device>()};
-    device_t() : handle(make_shared<vk_handle::device>()){}
+    std::shared_ptr<vk_handle::device> ptr{make_shared<vk_handle::device>()};
+    device_t() : ptr(make_shared<vk_handle::device>()){}
     queue_t graphics_queue{};
     queue_t transfer_queue{};
     queue_t  compute_queue{};
@@ -387,34 +389,35 @@ struct device_t
             if(index.flags & GRAPHICS_BIT)
             {
                 index_queue_count++;
-                device.graphics_queue.fam_idx = index;
-                device.graphics_queue.index_in_family = index_queue_count - 1;
                 if(queue_fams[index].queueCount < index_queue_count)
                     index_queue_count--;
+                device.graphics_queue.fam_idx = index;
+                device.graphics_queue.index_in_family = index_queue_count - 1;
+
             }
             if(index.flags & COMPUTE_BIT)
             {
                 index_queue_count++;
-                device.compute_queue.fam_idx = index;
-                device.compute_queue.index_in_family = index_queue_count - 1;
                 if(queue_fams[index].queueCount < index_queue_count)
                     index_queue_count--;
+                device.compute_queue.fam_idx = index;
+                device.compute_queue.index_in_family = index_queue_count - 1;
             }
             if(index.flags & PRESENT_BIT)
             {
                 index_queue_count++;
-                device.present_queue.fam_idx = index;
-                device.present_queue.index_in_family = index_queue_count - 1;
                 if(queue_fams[index].queueCount < index_queue_count)
                     index_queue_count--;
+                device.present_queue.fam_idx = index;
+                device.present_queue.index_in_family = index_queue_count - 1;
             }
             if(index.flags & TRANSFER_BIT)
             {
                 index_queue_count++;
-                device.transfer_queue.fam_idx = index;
-                device.transfer_queue.index_in_family = index_queue_count - 1;
                 if(queue_fams[index].queueCount < index_queue_count)
                     index_queue_count--;
+                device.transfer_queue.fam_idx = index;
+                device.transfer_queue.index_in_family = index_queue_count - 1;
             }
             vk_handle::description::device_queue device_queue{};
             device_queue.count = index_queue_count;
@@ -441,14 +444,24 @@ struct device_t
             priority = std::clamp(priority, 0.0f, 1.0f);
             queue.priority = priority;
         }
+        
         return true;
     }
-
+    //only call this AFTER determine_queues()
+    static void init_queue_handles(device_t& device)
+    {
+        if(!*device.ptr)
+            INFORM_ERR("WARNING : trying to init queue handles of a device with NULL HANDLE");
+        vkGetDeviceQueue(*device.ptr, device.graphics_queue.fam_idx, device.graphics_queue.index_in_family, &device.graphics_queue.handle);
+        vkGetDeviceQueue(*device.ptr, device.compute_queue.fam_idx, device.compute_queue.index_in_family, &device.compute_queue.handle);
+        vkGetDeviceQueue(*device.ptr, device.transfer_queue.fam_idx, device.transfer_queue.index_in_family, &device.transfer_queue.handle);
+        vkGetDeviceQueue(*device.ptr, device.present_queue.fam_idx, device.present_queue.index_in_family, &device.present_queue.handle);
+    }
 };
 
 struct window_t
 {
-    std::shared_ptr<vk_handle::surface>     surface{};
+    std::shared_ptr<vk_handle::surface> surface{};
     std::shared_ptr<vk_handle::swapchain> swapchain{};
 
     device_t owner;
@@ -486,7 +499,7 @@ struct window_t
             vk_handle::description::image_view_desc desc{};
             desc.format = window.swapchain->get_description().features.surface_format.format;
             desc.image  = image;
-            desc.parent = *window.owner.handle;
+            desc.parent = *window.owner.ptr;
             auto img_view = make_shared<vk_handle::image_view>();
             if(img_view->init(desc) && throws)
                 THROW("FAILED TO INIT SWAPCHAIN IMAGE VIEW");
@@ -498,14 +511,36 @@ struct window_t
     {
         //retrieve image handles. Remember : image count specified in swapchain creation is only a minimum!
         uint32_t swapchain_image_count;
-        vkGetSwapchainImagesKHR(*owner.handle, *swapchain, &swapchain_image_count,
+        vkGetSwapchainImagesKHR(*owner.ptr, *swapchain, &swapchain_image_count,
         nullptr);
         std::vector<VkImage> swapchain_images(swapchain_image_count);
-        vkGetSwapchainImagesKHR(*owner.handle, *swapchain, &swapchain_image_count,
+        vkGetSwapchainImagesKHR(*owner.ptr, *swapchain, &swapchain_image_count,
         swapchain_images.data());
 
         return swapchain_images;
     }
+    
+    bool update_swapchain(bool throws = true)
+    {
+        //please don't touch this function again. please.
+
+        vk_handle::description::swapchain_desc desc{};
+
+        desc.features = get_swapchain_features(get_swapchain_support(owner.phys_device.handle, this->surface->handle), this->window_ptr.get());
+        auto old_swapchain =  this->swapchain;
+        desc.device_queues =  old_swapchain->get_description().device_queues;
+        desc.old_swapchain =  old_swapchain->handle;
+        desc.parent        = *this->owner.ptr;
+        desc.surface       =  this->surface->handle;
+
+        //note that this line should discourage us from copying window_t objects around due to this sort of state change 
+        this->swapchain = make_shared<vk_handle::swapchain>();
+        EXIT_IF(this->swapchain->init(desc), "FAILED TO UPDATE SWAPCHAIN", DO_NOTHING);
+
+        old_swapchain->destroy();
+
+        return true;
+    }  
 };
 
 struct renderpass_t
@@ -530,21 +565,6 @@ struct framebuffer_t
     std::optional<VkFramebufferCreateFlags> flags;
 
     renderpass_t owner;
-    static std::vector<framebuffer_t> get_window_framebuffers(const window_t& window)
-    {
-        auto attachments = window_t::get_window_attachments(window);
-        std::vector<framebuffer_t> frmbffrs;
-        frmbffrs.reserve(attachments.size());
-        for(auto att : attachments)
-        {
-            framebuffer_t frm;
-            frm.height = window.get_features().extent.height, frm.width = window.get_features().extent.width;
-            frm.attachments.push_back(att);
-            frmbffrs.push_back(frm);
-        }
-        return frmbffrs;
-    }
-
 };
 
 struct pipeline_layout_t
@@ -587,9 +607,36 @@ struct shader_module_t
     std::vector<char> byte_code;
 };
 
-struct command_pool
+struct command_pool_t
 {
     std::shared_ptr<vk_handle::cmd_pool> handle{make_shared<vk_handle::cmd_pool>()};
+    VkCommandPoolCreateFlags flags;
+    device_t owner;
+    device_t::queue_t owning_queue;
+};
+
+struct command_buffer_t
+{
+    std::shared_ptr<vk_handle::cmd_buffers> handle{make_shared<vk_handle::cmd_buffers>()};
+    command_pool_t owner;
+    // primary or secondary (always use primary)
+    VkCommandBufferLevel level; 
+    private : 
+    uint32_t count = 1;
+    friend bool create_command_buffer(command_buffer_t&, bool);
+};
+
+struct fence_t
+{
+    std::shared_ptr<vk_handle::fence> handle{make_shared<vk_handle::fence>()};
+    device_t owner;
+    VkFenceCreateFlags flags;
+};
+
+struct semaphore_t
+{
+    std::shared_ptr<vk_handle::semaphore> handle{make_shared<vk_handle::semaphore>()};
+    device_t owner;
 };
 
 struct destruction_queue
@@ -636,7 +683,7 @@ static bool INIT = false;
 
 //Aesthetic Interactive Computing Engine
 //愛子ーアイコ
-namespace AiCo
+namespace AiCO
 {
     //client code
     class Instance
@@ -742,8 +789,9 @@ bool create_device(device_t& device, bool throws = true)
     description.phys_device        = device.phys_device.handle;
     description.enabled_extensions = physical_device_t::get_required_extension_names(physical_device_t::SWAPCHAIN);
     device_t::determine_queues(VULKAN, device, description.device_queues);
-    EXIT_IF(device.handle->init(description), "FAILED TO INIT DEVICE", DO_NOTHING);
-    
+    EXIT_IF(device.ptr->init(description), "FAILED TO INIT DEVICE", DO_NOTHING);
+    device_t::init_queue_handles(device);
+
     return true;
 }
 
@@ -770,8 +818,8 @@ bool create_window(const device_t& device, int width, int height, const char* ti
     swapchain_desc desc{};
     desc.surface = *srf;
     desc.features = get_swapchain_features(get_swapchain_support(device.phys_device.handle, *srf), window.window_ptr.get());
-    desc.device_queues = device.handle->get_description().device_queues;
-    desc.parent = *device.handle;
+    desc.device_queues = device.ptr->get_description().device_queues;
+    desc.parent = *device.ptr;
     window.swapchain = make_shared<vk_handle::swapchain>();
     EXIT_IF(window.swapchain->init(desc), "FAILED TO CREATE SWAPCHAIN", DO_NOTHING)
 
@@ -784,7 +832,7 @@ bool create_renderpass(const device_t& device, renderpass_t& renderpass, bool th
 {
     vk_handle::description::renderpass_desc desc{};
     desc.attachments = renderpass.attachments;
-    desc.parent = *device.handle;
+    desc.parent = *device.ptr;
     desc.subpass_dependencies = renderpass.subpass_dependencies;
     desc.subpass_descriptions = renderpass.subpass_descriptions;
     EXIT_IF(renderpass.handle->init(desc), "FAILED TO INIT RENDERPASS", DO_NOTHING);
@@ -807,7 +855,7 @@ bool create_framebuffer(const renderpass_t& renderpass, framebuffer_t& framebuff
 
     framebuffer.owner = renderpass;
     desc.renderpass = *framebuffer.owner.handle;
-    desc.parent     = *framebuffer.owner.owner.handle;
+    desc.parent     = *framebuffer.owner.owner.ptr;
 
     EXIT_IF(framebuffer.handle->init(desc), "FAILED TO INIT FRAMEBUFFER", DO_NOTHING);
 
@@ -816,7 +864,7 @@ bool create_framebuffer(const renderpass_t& renderpass, framebuffer_t& framebuff
 
 bool create_pipeline_layout(pipeline_layout_t& pipeline_layout, bool throws = true)
 {
-    pipeline_layout.description.parent = *pipeline_layout.owner.handle;
+    pipeline_layout.description.parent = *pipeline_layout.owner.ptr;
     EXIT_IF(pipeline_layout.handle->init(pipeline_layout.description), "FAILED TO INIT PIPELINE LAYOUT", DO_NOTHING);
     return true;
 }
@@ -830,7 +878,7 @@ bool create_graphics_pipeline(graphics_pipeline_t& pipeline, bool throws = true)
     description.dynamic_state_info = pipeline.dynamic_state;
     description.input_assembly_info = pipeline.input_assembly_state;
     description.multisample_info = pipeline.ms_state;
-    description.parent = *pipeline.owner.owner.handle;
+    description.parent = *pipeline.owner.owner.ptr;
     description.pipeline_cache = pipeline.pipeline_cache;
     description.pipeline_layout = *pipeline.layout.handle;
     description.rasterization_info = pipeline.rasterization_state;
@@ -848,13 +896,75 @@ bool create_shader_module(shader_module_t& module, bool throws = true)
 {
     vk_handle::description::shader_module_desc description{};
     description.byte_code = module.byte_code;
-    description.parent    = *module.owner.handle;
+    description.parent    = *module.owner.ptr;
     description.stage     = module.stage;
 
     EXIT_IF(module.handle->init(description), "FAILED TO INIT SHADER MODULE", DO_NOTHING);
 
     return true;
 }
+
+bool create_fence(fence_t& fence, bool throws = true)
+{
+    vk_handle::description::fence_desc description{};
+    description.flags = fence.flags;
+    description.parent = *fence.owner.ptr;
+
+    EXIT_IF(fence.handle->init(description), "FAILED TO INIT FENCE", DO_NOTHING);
+
+    return true;
+}
+
+bool create_semaphore(semaphore_t& semaphore, bool throws = true)
+{
+    vk_handle::description::semaphore_desc description{};
+    description.parent = *semaphore.owner.ptr;
+
+    EXIT_IF(semaphore.handle->init(description), "FAILED TO INIT SEMAPHORE", DO_NOTHING);
+
+    return true;
+}
+
+bool create_command_pool(command_pool_t& cmd_pool, bool throws = true)
+{
+    vk_handle::description::cmd_pool_desc description{};
+    description.flags = cmd_pool.flags;
+    description.parent = *cmd_pool.owner.ptr;
+    description.queue_fam_index = cmd_pool.owning_queue.fam_idx;
+
+    EXIT_IF(cmd_pool.handle->init(description), "FAILED TO INIT CMDPOOL", DO_NOTHING);
+
+    return true;
+}
+
+bool create_command_buffer(command_buffer_t& cmd_buffer, bool throws = true)
+{
+    vk_handle::description::cmd_buffers_desc description{};
+    description.buffer_count = cmd_buffer.count;
+    description.cmd_pool     = *cmd_buffer.owner.handle;
+    description.level        = cmd_buffer.level;
+    description.parent       = *cmd_buffer.owner.owner.ptr;
+    
+    EXIT_IF(cmd_buffer.handle->init(description), "FAILED TO INIT CMDBUFFERS", DO_NOTHING);
+
+    return true;
+}
+
+bool get_window_framebuffers(const window_t& window, std::vector<framebuffer_t>& framebuffers, const renderpass_t& owner, bool throws = true)
+{
+    auto attachments = window_t::get_window_attachments(window);
+    framebuffers.reserve(attachments.size());
+    for(auto att : attachments)
+    {
+        framebuffer_t frm;
+        frm.height = window.get_features().extent.height, frm.width = window.get_features().extent.width;
+        frm.attachments.push_back(att);
+        EXIT_IF(!create_framebuffer(owner, frm), "FAILED TO INIT WINDOW FRAMBUFFER", DO_NOTHING);
+        framebuffers.push_back(frm);
+    }
+    return true;
+}
+
 /*
     This class initializes 3rd party dependencies as well as the vulkan instance,
     finds all physical devices in the system, and enables the vulkan validation layers in debug mode.
@@ -879,16 +989,179 @@ public:
         vulkan_context::copies--;
     }
 };
-unsigned int vulkan_context::copies = 0;
+uint vulkan_context::copies = 0;
 
-void draw_frame()
+struct render_data_t
 {
+    graphics_pipeline_t  graphics_pipeline;
+    VkClearValue              clear_values;
+};
+struct frame_draw_data_t
+{
+    renderpass_t framebuffer_renderpass;
+    framebuffer_t swpch_framebuffer; 
+    command_buffer_t cmd_buffer;
+    semaphore_t swpch_img_available;
+    VkRect2D draw_area;
+};
+typedef std::function<bool (semaphore_t&, fence_t&, const frame_draw_data_t&, const render_data_t&, const bool)>  frame_render_callback_fnc;
 
+bool render_triangles(semaphore_t& signal_semaphore,
+fence_t& signal_fence, const frame_draw_data_t& frame_data, const render_data_t& data,
+const bool throws = true)
+{
+    VkCommandBufferBeginInfo begin_info{};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    
+    auto& cmd_buffer = frame_data.cmd_buffer.handle->handle[0];
+
+    EXIT_IF(vkBeginCommandBuffer(cmd_buffer, &begin_info), "FAILED TO BEGIN CMD BUFFER", DO_NOTHING);
+
+    VkRenderPassBeginInfo renderpass_bi{};
+    renderpass_bi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderpass_bi.framebuffer     = *frame_data.swpch_framebuffer.handle;
+    renderpass_bi.clearValueCount = 1;
+    renderpass_bi.pClearValues    = &data.clear_values;
+    renderpass_bi.renderArea      = frame_data.draw_area;
+    renderpass_bi.renderPass      = *frame_data.framebuffer_renderpass.handle;
+
+    vkCmdBeginRenderPass(cmd_buffer, &renderpass_bi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline.handle->handle[0]);
+    
+    VkViewport viewport{(float)frame_data.draw_area.offset.x, (float)frame_data.draw_area.offset.y, (float)frame_data.draw_area.extent.width,
+    (float)frame_data.draw_area.extent.height, 0.0, 1.0};
+    vkCmdSetViewport(cmd_buffer, 0, 1, &viewport);
+    VkRect2D scissor{frame_data.draw_area};
+    vkCmdSetScissor(cmd_buffer, 0, 1, &scissor);
+
+    vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cmd_buffer);
+
+    EXIT_IF(vkEndCommandBuffer(cmd_buffer), "FAILED TO END CMD BUFFER", DO_NOTHING);
+
+    VkSubmitInfo submit_info{};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1, submit_info.pCommandBuffers = &cmd_buffer;
+    submit_info.waitSemaphoreCount = 1, submit_info.pWaitSemaphores = &frame_data.swpch_img_available.handle->handle;
+    VkPipelineStageFlags wait_stage_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    submit_info.pWaitDstStageMask = &wait_stage_mask;
+    submit_info.signalSemaphoreCount = 1, submit_info.pSignalSemaphores = &signal_semaphore.handle->handle;
+
+    EXIT_IF(vkQueueSubmit(frame_data.cmd_buffer.owner.owning_queue.handle, 1, &submit_info, signal_fence.handle->handle), "FAILED TO SUBMIT CMD BUFFER", DO_NOTHING);
+    
+    return true;
 }
-void invoke_renderpass()
+
+struct frame_data_t
 {
-    glfwPollEvents();
-    draw_frame();
+    struct indexed_data
+    {
+        fence_t     f_rendering_finished;
+        semaphore_t swapchain_img_acquired;
+        semaphore_t s_rendering_finished;
+        command_buffer_t cmd_buffer;
+    };
+    frame_data_t(device_t device, int frames_in_flight, int width, int height, const char* title) : device(device)
+    {
+        create_window(device, width, height, title, window);
+        glfwSetWindowUserPointer(window.window_ptr.get(), this);
+        glfwSetFramebufferSizeCallback(window.window_ptr.get(), window_resize_callback);
+        cmdpool.owner = device;
+        cmdpool.owning_queue = device.graphics_queue;
+        cmdpool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        create_command_pool(cmdpool);
+
+        auto extent = window.get_features().extent;
+        draw_data.draw_area.extent = extent;
+        draw_data.draw_area.offset = {0, 0};
+
+        idx_data.resize(frames_in_flight);
+        for(auto& data : idx_data)
+        {
+            data.f_rendering_finished.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+            data.f_rendering_finished.owner = device;
+            create_fence(data.f_rendering_finished);
+
+            data.s_rendering_finished.owner = device;
+            create_semaphore(data.s_rendering_finished);
+
+            data.swapchain_img_acquired .owner = device;
+            create_semaphore(data.swapchain_img_acquired);
+
+            data.cmd_buffer.level  = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            data.cmd_buffer.owner  = cmdpool;
+            create_command_buffer(data.cmd_buffer);
+        }
+    }
+    frame_draw_data_t draw_data;
+    std::vector<indexed_data> idx_data;
+    std::vector<framebuffer_t> window_framebuffers;
+    window_t window;
+    device_t device;
+//private:
+    command_pool_t cmdpool;
+    void update_frame()
+    {
+        window.update_swapchain();
+        get_window_framebuffers(window, window_framebuffers, draw_data.framebuffer_renderpass);
+INFORM_ERR("NEW FRAMEBUFFER SIZE " << window_framebuffers[0].width << '\t' << window_framebuffers[0].height);
+        auto extent = window.get_features().extent;
+        draw_data.draw_area.extent = extent;
+INFORM_ERR("NEW DRAW AREA" << draw_data.draw_area.extent.width << '\t' << draw_data.draw_area.extent.height);
+
+        draw_data.draw_area.offset = {0, 0};
+        frame_resized = false;
+    }
+    bool frame_resized = false;
+    static void window_resize_callback(GLFWwindow* window, [[maybe_unused]] int width, [[maybe_unused]] int height)
+    {
+        auto ptr = glfwGetWindowUserPointer(window);
+        reinterpret_cast<frame_data_t*>(ptr)->frame_resized = true;
+    }
+    friend bool draw_frames(frame_data_t&, const uint&, frame_render_callback_fnc, const render_data_t&, const bool);
+    uint frame_idx = 0;
+};
+
+bool draw_frames(frame_data_t& data, const uint& max_frames_inflight,
+frame_render_callback_fnc render_callback, const render_data_t& render_data, const bool throws = true)
+{
+
+    data.frame_idx = (data.frame_idx + 1)%max_frames_inflight;
+    auto& idx_data = data.idx_data[data.frame_idx];
+
+
+    auto& device_handle = *data.window.owner.ptr;
+    auto& frame_rendered = idx_data.f_rendering_finished.handle->handle;
+
+    vkWaitForFences(device_handle, 1, &frame_rendered, VK_TRUE, UINT64_MAX);
+
+
+    uint32_t swpch_img_idx;
+    auto swpch_res = vkAcquireNextImageKHR(*data.window.owner.ptr, *data.window.swapchain, UINT64_MAX, *idx_data.swapchain_img_acquired.handle,
+    VK_NULL_HANDLE, &swpch_img_idx);
+    EXIT_IF(swpch_res < 0, "FAILED TO ACQUIRE NEXT SWAPCHAIN IMAGE", DO_NOTHING)
+
+    if(data.frame_resized)
+    {
+        data.update_frame();
+        return true;
+    }
+
+    vkResetFences(device_handle, 1, &frame_rendered);
+
+    data.draw_data.swpch_img_available = idx_data.swapchain_img_acquired;
+    data.draw_data.cmd_buffer = idx_data.cmd_buffer;
+    data.draw_data.swpch_framebuffer = data.window_framebuffers[swpch_img_idx];
+    render_callback(idx_data.s_rendering_finished, idx_data.f_rendering_finished, data.draw_data, render_data, throws);
+
+    VkPresentInfoKHR swpch_present_info{};
+    swpch_present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    swpch_present_info.waitSemaphoreCount = 1, swpch_present_info.pWaitSemaphores = &idx_data.s_rendering_finished.handle->handle;
+    swpch_present_info.swapchainCount = 1, swpch_present_info.pSwapchains = &data.window.swapchain->handle, swpch_present_info.pImageIndices = &swpch_img_idx;
+
+    EXIT_IF(vkQueuePresentKHR(data.window.owner.present_queue.handle, &swpch_present_info) < 0, "FRAME SUBMIT FAILED", DO_NOTHING);
+
+    return true;
 }
 
 //remember, this is a thin vulkan abstraction :>
@@ -898,8 +1171,12 @@ int main()
     context.start();    //this will enforce correct destruction order
     device_t mydev;
     create_device(mydev);
-    window_t wind;
-    create_window(mydev, 100, 100, "title", wind);
+
+
+    constexpr uint FRAMES_IN_FLIGHT = 2;
+
+    frame_data_t data(mydev, FRAMES_IN_FLIGHT, 100, 100, "whatever");
+    auto& wind = data.window;
 
     renderpass_t renderpass;
     {
@@ -963,11 +1240,9 @@ int main()
     }
     create_renderpass(mydev, renderpass);      
 
-    auto s = window_t::get_window_attachments(wind);
-    framebuffer_t f;
-    auto window_frmbffrs = framebuffer_t::get_window_framebuffers(wind);
-    for (auto& f : window_frmbffrs)
-        create_framebuffer(renderpass, f);
+    data.draw_data.framebuffer_renderpass = renderpass;
+    get_window_framebuffers(wind, data.window_framebuffers, renderpass);
+
     graphics_pipeline_t triangle_pipeline;
     {
         triangle_pipeline.color_blend_state.logic_op_enabled = VK_FALSE;
@@ -1000,8 +1275,8 @@ int main()
         triangle_pipeline.rasterization_state.cull_mode = VK_CULL_MODE_NONE;
 
         std::vector<char> fragment_code, vertex_code;
-        read_binary_file({"shaders/"}, "triangle_frag.spv", fragment_code);
-        read_binary_file({"shaders/"}, "triangle_vert.spv", vertex_code);
+        read_binary_file({"shaders/"}, "triangle_no_input_frag.spv", fragment_code);
+        read_binary_file({"shaders/"}, "triangle_no_input_vert.spv", vertex_code);
         shader_module_t frag, vert;
         frag.byte_code = fragment_code, vert.byte_code = vertex_code;
         frag.owner = vert.owner = mydev;
@@ -1027,4 +1302,22 @@ int main()
         
         create_graphics_pipeline(triangle_pipeline);
     }
+    command_pool_t cmdpool;
+    cmdpool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;   
+    cmdpool.owner = mydev;
+    cmdpool.owning_queue = mydev.graphics_queue;
+    create_command_pool(cmdpool);
+
+    render_data_t render_data{};
+    render_data.clear_values.color = {0.0, 0.0, 0.0, 1.0};
+    render_data.clear_values.depthStencil = VkClearDepthStencilValue{};
+    render_data.graphics_pipeline = triangle_pipeline;
+    
+    while(!glfwWindowShouldClose(wind.window_ptr.get()))
+    {
+        glfwPollEvents();
+       // data.update_frame();
+        draw_frames(data, FRAMES_IN_FLIGHT, render_triangles, render_data);
+    }
+    vkDeviceWaitIdle(*mydev.ptr);
 }

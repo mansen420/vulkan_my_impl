@@ -674,7 +674,7 @@ public:
         
         vkCmdBeginRenderPass(cmd_buffer, &renderpass_info, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline);
-        const VkDeviceSize buffer_offset = 0;
+        const VkDeviceSiz   e buffer_offset = 0;
         vkCmdBindVertexBuffers(cmd_buffer, 0, 1, &data.vertex_buffer, &buffer_offset);
         vkCmdSetViewport(cmd_buffer, 0, 1, &data.dynamic_viewport);
         vkCmdSetScissor(cmd_buffer, 0, 1, &data.dynamic_scissor);
