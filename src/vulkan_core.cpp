@@ -953,6 +953,7 @@ bool create_command_buffer(command_buffer_t& cmd_buffer, bool throws = true)
 bool get_window_framebuffers(const window_t& window, std::vector<framebuffer_t>& framebuffers, const renderpass_t& owner, bool throws = true)
 {
     auto attachments = window_t::get_window_attachments(window);
+    framebuffers.clear(); //clear old values 
     framebuffers.reserve(attachments.size());
     for(auto att : attachments)
     {
