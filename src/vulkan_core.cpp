@@ -250,7 +250,6 @@ struct physical_device_t
 
 std::vector<physical_device_t> PHYSICAL_DEVICES;
 
-//immutable and unique
 
 class device_t
 {
@@ -549,22 +548,24 @@ private:
 
 class framebuffer_t
 {
+    vk_handle::framebuffer handle;
+    std::vector<vk_handle::image_view> attachments;
 public:
-    std::shared_ptr<vk_handle::framebuffer> handle{make_shared<vk_handle::framebuffer>()};
+    operator VkFramebuffer() const {return handle;}
+    vk_handle::description::framebuffer_desc get_description(){return handle.get_description();}
 
-    operator VkFramebuffer() const {return *handle;}
-    vk_handle::description::framebuffer_desc get_description(){return handle->get_description();}
+    framebuffer_t& operator =(const framebuffer_t&) = delete;
+    framebuffer_t(const framebuffer_t&)             = delete;
 
     struct description
     {
-        std::vector<std::shared_ptr<vk_handle::image_view>> attachments;
+        std::vector<vk_handle::image_view> attachments;
         uint32_t width, height;
         std::optional<uint32_t> layers;
         std::optional<VkFramebufferCreateFlags> flags;
     };
-    std::vector<std::shared_ptr<vk_handle::image_view>> attachments;
     uint32_t width, height;
-
+    
     framebuffer_t(description description, std::shared_ptr<const renderpass_t> renderpass)
     {
         create_framebuffer(renderpass, description, *this);
@@ -574,8 +575,13 @@ public:
     }
 
     std::shared_ptr<const renderpass_t> owner;
+    ~framebuffer_t()
+    {
+        for(auto& x : attachments)
+            x.destroy();
+        handle.destroy();
+    }
 private:
-
     static bool create_framebuffer(std::shared_ptr<const renderpass_t> renderpass, description description,
     framebuffer_t& framebuffer, bool throws = true)
     {
@@ -585,7 +591,7 @@ private:
 
         desc.attachments.reserve(description.attachments.size());
         for(auto att : description.attachments)
-            desc.attachments.push_back(*att);
+            desc.attachments.push_back(att);
         desc.flags  = description.flags;
         desc.height = description.height, desc.width = description.width;
         desc.layers = description.layers;
@@ -594,65 +600,137 @@ private:
         desc.renderpass = *framebuffer.owner;
         desc.parent     = *framebuffer.owner->owner;
 
-        EXIT_IF(framebuffer.handle->init(desc), "FAILED TO INIT FRAMEBUFFER", DO_NOTHING);
+        EXIT_IF(framebuffer.handle.init(desc), "FAILED TO INIT FRAMEBUFFER", DO_NOTHING);
 
         return true;
     }
 
 };
 
-struct pipeline_layout_t
+class graphics_pipeline_t
 {
-    std::shared_ptr<vk_handle::pipeline_layout> handle{make_shared<vk_handle::pipeline_layout>()};
-    vk_handle::description::pipeline_layout_desc description;
-
-    std::shared_ptr<const device_t> owner;
-};
-
-struct graphics_pipeline_t
-{
-    std::shared_ptr<vk_handle::graphics_pipeline> handle{make_shared<vk_handle::graphics_pipeline>()};
-
-    std::shared_ptr<const renderpass_t>     owner;
-    uint32_t subpass_index;
-
-    pipeline_layout_t layout;
-
-    vk_handle::description::viewport_state_desc viewport_state;
-    vk_handle::description::vertex_input_desc vertex_input_state;
-    vk_handle::description::dynamic_state_desc dynamic_state;
-    vk_handle::description::color_blend_desc color_blend_state;
-    vk_handle::description::multisample_desc ms_state;
-    vk_handle::description::rasterization_desc rasterization_state;
-    vk_handle::description::input_assembly_desc input_assembly_state;
-    std::vector<vk_handle::description::shader_stage_desc> shader_modules;
-    vk_handle::description::depth_stencil_desc depth_stencil_state;
+    vk_handle::graphics_pipeline handle;
+    vk_handle::pipeline_layout layout;
     VkPipelineCache pipeline_cache;
+public:
+    typedef vk_handle::description::graphics_pipeline_desc description;
+
+    const description record;
+
+    operator VkPipeline()const {return handle.handle[0];}
+
+    graphics_pipeline_t& operator=(const graphics_pipeline_t&) = delete;
+    graphics_pipeline_t(const graphics_pipeline_t&) = delete;
+
+    graphics_pipeline_t(description description, std::shared_ptr<const renderpass_t> renderpass) : record(description)
+    {
+        layout.init({*renderpass->owner});
+        description.pipeline_layout = layout;
+        description.parent = *renderpass->owner;
+        create_graphics_pipeline(*this, description);
+        layout.destroy();
+    }
+    std::shared_ptr<const renderpass_t>     owner;
+
+    ~graphics_pipeline_t()
+    {
+        handle.destroy();
+    }
+private:
+
+    static bool create_graphics_pipeline(graphics_pipeline_t& pipeline, description desc, bool throws = true)
+    {
+        EXIT_IF(pipeline.handle.init({desc}), "FAILED TO INIT GRAPHICS PIPELINE", DO_NOTHING);
+        return true;
+    }
+
 };
 
-struct shader_module_t
+class shader_module_t
 {
-    std::shared_ptr<vk_handle::shader_module> handle{make_shared<vk_handle::shader_module>()};
+    vk_handle::shader_module handle;
+public:
+    typedef vk_handle::description::shader_module_desc description;
+
+    operator VkShaderModule()
+    {
+        return handle;
+    }
+
+    shader_module_t& operator=(const shader_module_t&) = delete;
+    shader_module_t(const shader_module_t&) = delete;
+
+    description record;
+
+    shader_module_t() = delete;
+
+    shader_module_t(description description, std::shared_ptr<const device_t> device) : record(description), owner(device)
+    {
+        description.parent = *device;
+        create_shader_module(*this, description);
+    }
 
     std::shared_ptr<const device_t> owner;
 
-    VkShaderStageFlagBits stage;
+    ~shader_module_t()
+    {
+        handle.destroy();
+    }
+private:
 
-    std::vector<char> byte_code;
+    static bool create_shader_module(shader_module_t& module, description desc, bool throws = true)
+    {
+        EXIT_IF(module.handle.init(desc), "FAILED TO INIT SHADER MODULE", DO_NOTHING);
+
+        return true;
+    }
+
 };
 
-struct command_pool_t
+class command_pool_t
 {
-    std::shared_ptr<vk_handle::cmd_pool> handle{make_shared<vk_handle::cmd_pool>()};
-    VkCommandPoolCreateFlags flags;
+    vk_handle::cmd_pool handle;
+public:
+    typedef vk_handle::description::cmd_pool_desc description;
+
+    operator VkCommandPool() const {return handle;}
+
+    command_pool_t& operator=(const command_pool_t&) = delete;
+    command_pool_t(const command_pool_t&) = delete;
+
+    description record;
+
+    command_pool_t(description description, std::shared_ptr<const device_t> device, device_t::queue_t queue)
+    {
+        owner = device;
+        record = description;
+
+        description.parent = *device;
+        description.queue_fam_index = queue.fam_idx;
+        create_command_pool(*this, description);
+    }
+
     std::shared_ptr<const device_t> owner;
     device_t::queue_t owning_queue;
+    ~command_pool_t()
+    {
+        handle.destroy();
+    }
+private:
+
+    static bool create_command_pool(command_pool_t& cmd_pool, description desc, bool throws = true)
+    {
+        EXIT_IF(cmd_pool.handle.init(desc), "FAILED TO INIT CMDPOOL", DO_NOTHING);
+
+        return true;
+    }
+
 };
 
 struct command_buffer_t
 {
     std::shared_ptr<vk_handle::cmd_buffers> handle{make_shared<vk_handle::cmd_buffers>()};
-    command_pool_t owner;
+    std::shared_ptr<const command_pool_t> owner;
     // primary or secondary (always use primary)
     VkCommandBufferLevel level; 
     private : 
@@ -660,17 +738,75 @@ struct command_buffer_t
     friend bool create_command_buffer(command_buffer_t&, bool);
 };
 
-struct fence_t
+class fence_t
 {
-    std::shared_ptr<vk_handle::fence> handle{make_shared<vk_handle::fence>()};
+    vk_handle::fence handle;
+public:
     std::shared_ptr<const device_t> owner;
-    VkFenceCreateFlags flags;
+
+    operator VkFence() const {return handle;}
+
+    fence_t& operator =(const fence_t&) = delete;
+    fence_t(const fence_t&) = delete;
+
+    fence_t() = delete;
+
+    typedef vk_handle::description::fence_desc description;
+    description record;
+    fence_t(description description, std::shared_ptr<const device_t> device) : owner(device), record(description)
+    {
+        description.parent = *owner;
+        create_fence(*this, description);
+    }
+    ~fence_t()
+    {
+        handle.destroy();
+    }
+private:
+    static bool create_fence(fence_t& fence, description desc, bool throws = true)
+    {
+        EXIT_IF(fence.handle.init(desc), "FAILED TO INIT FENCE", DO_NOTHING);
+
+        return true;
+    }
+
 };
 
-struct semaphore_t
+class semaphore_t
 {
-    std::shared_ptr<vk_handle::semaphore> handle{make_shared<vk_handle::semaphore>()};
+    vk_handle::semaphore handle;
+public:
+    typedef vk_handle::description::semaphore_desc description;
+
+    operator VkSemaphore () const {return handle;}
+
+    semaphore_t& operator =(const semaphore_t&) = delete;
+    semaphore_t(const semaphore_t&) = delete;
+
+    semaphore_t() = delete;
+
+    description record;
+    semaphore_t(description description, std::shared_ptr<const device_t> device) : record(description)
+    {
+        description.parent = *device;
+        create_semaphore(*this, description);
+    }
     std::shared_ptr<const device_t> owner;
+
+    ~semaphore_t()
+    {
+        handle.destroy();
+    }
+
+private:
+
+    static bool create_semaphore(semaphore_t& semaphore, description desc, bool throws = true)
+    {
+        EXIT_IF(semaphore.handle.init(desc), "FAILED TO INIT SEMAPHORE", DO_NOTHING);
+
+        return true;
+    }
+
 };
 
 struct destruction_queue
@@ -811,91 +947,14 @@ INFORM(greetings[num]);
     return true;
 }
 
-//a device is just something that takes rendering commands (window agnostic)
-
-
-bool create_pipeline_layout(pipeline_layout_t& pipeline_layout, bool throws = true)
-{
-    pipeline_layout.description.parent = *pipeline_layout.owner;
-    EXIT_IF(pipeline_layout.handle->init(pipeline_layout.description), "FAILED TO INIT PIPELINE LAYOUT", DO_NOTHING);
-    return true;
-}
-
-bool create_graphics_pipeline(graphics_pipeline_t& pipeline, bool throws = true)
-{
-    vk_handle::description::graphics_pipeline_desc description{};
-
-    description.color_blend_info = pipeline.color_blend_state;
-    description.depth_stencil_info = pipeline.depth_stencil_state;
-    description.dynamic_state_info = pipeline.dynamic_state;
-    description.input_assembly_info = pipeline.input_assembly_state;
-    description.multisample_info = pipeline.ms_state;
-    description.parent = *pipeline.owner->owner;
-    description.pipeline_cache = pipeline.pipeline_cache;
-    description.pipeline_layout = *pipeline.layout.handle;
-    description.rasterization_info = pipeline.rasterization_state;
-    description.renderpass = *pipeline.owner;
-    description.shader_stages_info = pipeline.shader_modules;
-    description.subpass_index = pipeline.subpass_index;
-    description.vertex_input_info = pipeline.vertex_input_state;
-    description.viewport_state_info = pipeline.viewport_state;
-
-    EXIT_IF(pipeline.handle->init({description}), "FAILED TO INIT GRAPHICS PIPELINE", DO_NOTHING);
-    return true;
-}
-
-bool create_shader_module(shader_module_t& module, bool throws = true)
-{
-    vk_handle::description::shader_module_desc description{};
-    description.byte_code = module.byte_code;
-    description.parent    = *module.owner;
-    description.stage     = module.stage;
-
-    EXIT_IF(module.handle->init(description), "FAILED TO INIT SHADER MODULE", DO_NOTHING);
-
-    return true;
-}
-
-bool create_fence(fence_t& fence, bool throws = true)
-{
-    vk_handle::description::fence_desc description{};
-    description.flags = fence.flags;
-    description.parent = *fence.owner;
-
-    EXIT_IF(fence.handle->init(description), "FAILED TO INIT FENCE", DO_NOTHING);
-
-    return true;
-}
-
-bool create_semaphore(semaphore_t& semaphore, bool throws = true)
-{
-    vk_handle::description::semaphore_desc description{};
-    description.parent = *semaphore.owner;
-
-    EXIT_IF(semaphore.handle->init(description), "FAILED TO INIT SEMAPHORE", DO_NOTHING);
-
-    return true;
-}
-
-bool create_command_pool(command_pool_t& cmd_pool, bool throws = true)
-{
-    vk_handle::description::cmd_pool_desc description{};
-    description.flags = cmd_pool.flags;
-    description.parent = *cmd_pool.owner;
-    description.queue_fam_index = cmd_pool.owning_queue.fam_idx;
-
-    EXIT_IF(cmd_pool.handle->init(description), "FAILED TO INIT CMDPOOL", DO_NOTHING);
-
-    return true;
-}
 
 bool create_command_buffer(command_buffer_t& cmd_buffer, bool throws = true)
 {
     vk_handle::description::cmd_buffers_desc description{};
     description.buffer_count = cmd_buffer.count;
-    description.cmd_pool     = *cmd_buffer.owner.handle;
+    description.cmd_pool     = *cmd_buffer.owner;
     description.level        = cmd_buffer.level;
-    description.parent       = *cmd_buffer.owner.owner;
+    description.parent       = *cmd_buffer.owner->owner;
     
     EXIT_IF(cmd_buffer.handle->init(description), "FAILED TO INIT CMDBUFFERS", DO_NOTHING);
 
@@ -931,27 +990,27 @@ uint vulkan_context::copies = 0;
 
 struct render_data_t
 {
-    graphics_pipeline_t  graphics_pipeline;
+    std::shared_ptr<const graphics_pipeline_t>  graphics_pipeline;
     VkClearValue              clear_values;
 };
 struct frame_draw_data_t
 {
     std::shared_ptr<const renderpass_t> framebuffer_renderpass;
     std::shared_ptr<const framebuffer_t>     swpch_framebuffer; 
-    command_buffer_t         cmd_buffer;
-    semaphore_t     swpch_img_available;
-    VkRect2D                 draw_area;
+    vk_handle::cmd_buffers                          cmd_buffer;
+    vk_handle::semaphore                   swpch_img_available;
+    VkRect2D                                         draw_area;
+    device_t::queue_t                             submit_queue;
 };
-typedef std::function<bool (semaphore_t&, fence_t&, const frame_draw_data_t&, const render_data_t&, const bool)>  frame_render_callback_fnc;
+typedef std::function<bool (VkSemaphore, VkFence, const frame_draw_data_t&, const render_data_t&, const bool)>  frame_render_callback_fnc;
 
-bool render_triangles(semaphore_t& signal_semaphore, fence_t& signal_fence, const frame_draw_data_t& frame_data,
-const render_data_t& data,
-const bool throws = true)
+bool render_triangles(VkSemaphore signal_semaphore, VkFence signal_fence, const frame_draw_data_t& frame_data,
+const render_data_t& data, const bool throws = true)
 {
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     
-    auto& cmd_buffer = frame_data.cmd_buffer.handle->handle[0];
+    auto& cmd_buffer = frame_data.cmd_buffer.handle[0];
 
     EXIT_IF(vkBeginCommandBuffer(cmd_buffer, &begin_info), "FAILED TO BEGIN CMD BUFFER", DO_NOTHING);
 
@@ -964,7 +1023,7 @@ const bool throws = true)
     renderpass_bi.renderPass      = *frame_data.framebuffer_renderpass;
 
     vkCmdBeginRenderPass(cmd_buffer, &renderpass_bi, VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, data.graphics_pipeline.handle->handle[0]);
+    vkCmdBindPipeline(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, *data.graphics_pipeline);
     
     VkViewport viewport{(float)frame_data.draw_area.offset.x, (float)frame_data.draw_area.offset.y, (float)frame_data.draw_area.extent.width,
     (float)frame_data.draw_area.extent.height, 0.0, 1.0};
@@ -980,12 +1039,14 @@ const bool throws = true)
     VkSubmitInfo submit_info{};
     submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit_info.commandBufferCount = 1, submit_info.pCommandBuffers = &cmd_buffer;
-    submit_info.waitSemaphoreCount = 1, submit_info.pWaitSemaphores = &frame_data.swpch_img_available.handle->handle;
+    VkSemaphore wait_s = frame_data.swpch_img_available;
+    submit_info.waitSemaphoreCount = 1, submit_info.pWaitSemaphores = &wait_s;
     VkPipelineStageFlags wait_stage_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     submit_info.pWaitDstStageMask = &wait_stage_mask;
-    submit_info.signalSemaphoreCount = 1, submit_info.pSignalSemaphores = &signal_semaphore.handle->handle;
+    VkSemaphore submit_s = signal_semaphore;
+    submit_info.signalSemaphoreCount = 1, submit_info.pSignalSemaphores = &submit_s;
 
-    EXIT_IF(vkQueueSubmit(frame_data.cmd_buffer.owner.owning_queue.handle, 1, &submit_info, signal_fence.handle->handle), "FAILED TO SUBMIT CMD BUFFER", DO_NOTHING);
+    EXIT_IF(vkQueueSubmit(frame_data.submit_queue, 1, &submit_info, signal_fence), "FAILED TO SUBMIT CMD BUFFER", DO_NOTHING);
     
     return true;
 }
@@ -1014,10 +1075,10 @@ class frame
         
         GLFWwindow* window_ptr;
 
-        static std::vector<std::shared_ptr<vk_handle::image_view>> get_window_attachments(const window_t& window, bool throws = true)
+        static std::vector<vk_handle::image_view> get_window_attachments(const window_t& window, bool throws = true)
         {
             auto images = window.get_swapchain_images();
-            std::vector<std::shared_ptr<vk_handle::image_view>> attachments;
+            std::vector<vk_handle::image_view> attachments;
             attachments.reserve(images.size());
             for(auto& image : images)
             {
@@ -1025,8 +1086,8 @@ class frame
                 desc.format = window.swapchain.get_description().features.surface_format.format;
                 desc.image  = image;
                 desc.parent = *window.owner;
-                auto img_view = make_shared<vk_handle::image_view>();
-                if(img_view->init(desc) && throws)
+                vk_handle::image_view img_view;
+                if(img_view.init(desc) && throws)
                     THROW("FAILED TO INIT SWAPCHAIN IMAGE VIEW");
                 attachments.push_back(img_view);
             }
@@ -1131,27 +1192,29 @@ public:
         glfwSetWindowUserPointer(window.window_ptr, this);
         glfwSetFramebufferSizeCallback(window.window_ptr, window_resize_callback);
 
-        data.cmdpool.owner = device;
-        data.cmdpool.owning_queue = device->graphics_queue;
-        data.cmdpool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        create_command_pool(data.cmdpool);
+        command_pool_t::description cmdp_desc{};
+        cmdp_desc.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        cmdp_desc.parent = *device;
+        cmdp_desc.queue_fam_index = device->graphics_queue.fam_idx;
+        data.cmdpool.init(cmdp_desc);
 
         data.idx_data.resize(frames_in_flight);
         for(auto& idx_data : data.idx_data)
         {
-            idx_data.f_rendering_finished.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-            idx_data.f_rendering_finished.owner = device;
-            create_fence(idx_data.f_rendering_finished);
+            fence_t::description fence_d;
+            fence_d.flags  = VK_FENCE_CREATE_SIGNALED_BIT;
+            fence_d.parent = *device;
+            idx_data.f_rendering_finished.init(fence_d);
 
-            idx_data.s_rendering_finished.owner = device;
-            create_semaphore(idx_data.s_rendering_finished);
+            idx_data.s_rendering_finished.init({*device});
+            idx_data.swapchain_img_acquired.init({*device});
 
-            idx_data.swapchain_img_acquired .owner = device;
-            create_semaphore(idx_data.swapchain_img_acquired);
-
-            idx_data.cmd_buffer.level  = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-            idx_data.cmd_buffer.owner  = data.cmdpool;
-            create_command_buffer(idx_data.cmd_buffer);
+            vk_handle::description::cmd_buffers_desc cmdbfr_d{};
+            cmdbfr_d.buffer_count = 1;
+            cmdbfr_d.cmd_pool = data.cmdpool;
+            cmdbfr_d.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            cmdbfr_d.parent = *device;
+            idx_data.cmdbuffer.init(cmdbfr_d);
         }
         
         auto descriptions = get_window_framebuffers_descriptions(window);
@@ -1164,17 +1227,21 @@ public:
     {
         return internal_draw_frames(data, data.idx_data.size(), render_callback, render_data);
     }
+    ~frame()
+    {
+        //FIXME add clean-up here
+    }
 private:
     struct frame_data_t
     {
         struct indexed_data
         {
-            fence_t     f_rendering_finished;
-            semaphore_t swapchain_img_acquired;
-            semaphore_t s_rendering_finished;
-            command_buffer_t cmd_buffer;
-        };    
-        command_pool_t cmdpool;
+            vk_handle::fence       f_rendering_finished;
+            vk_handle::semaphore   swapchain_img_acquired;
+            vk_handle::semaphore   s_rendering_finished;
+            vk_handle::cmd_buffers cmdbuffer;
+        };
+        vk_handle::cmd_pool cmdpool;
         std::vector<indexed_data> idx_data;
         std::vector<std::shared_ptr<const framebuffer_t>> swapchain_framebuffers;
         uint frame_idx = 0;
@@ -1207,13 +1274,13 @@ private:
 
 
         auto& device_handle = *window.owner;
-        auto& frame_rendered = idx_data.f_rendering_finished.handle->handle;
+        VkFence frame_rendered = idx_data.f_rendering_finished;
 
         vkWaitForFences(device_handle, 1, &frame_rendered, VK_TRUE, UINT64_MAX);
 
 
         uint32_t swpch_img_idx;
-        auto swpch_res = vkAcquireNextImageKHR(device_handle, window.swapchain, UINT64_MAX, *idx_data.swapchain_img_acquired.handle,
+        auto swpch_res = vkAcquireNextImageKHR(device_handle, window.swapchain, UINT64_MAX, idx_data.swapchain_img_acquired,
         VK_NULL_HANDLE, &swpch_img_idx);
         EXIT_IF(swpch_res < 0, "FAILED TO ACQUIRE NEXT SWAPCHAIN IMAGE", DO_NOTHING)
 
@@ -1227,17 +1294,19 @@ private:
 
         frame_draw_data_t draw_data{};
         draw_data.swpch_img_available = idx_data.swapchain_img_acquired;
-        draw_data.cmd_buffer = idx_data.cmd_buffer;
+        draw_data.cmd_buffer = idx_data.cmdbuffer;
         draw_data.swpch_framebuffer = data.swapchain_framebuffers[swpch_img_idx];
         draw_data.framebuffer_renderpass = data.swapchain_framebuffers[swpch_img_idx]->owner;
         draw_data.draw_area.extent = {draw_data.swpch_framebuffer->width, draw_data.swpch_framebuffer->height};
         draw_data.draw_area.offset = {0, 0};
+        draw_data.submit_queue = window.owner->graphics_queue; //HACK 
         render_callback(idx_data.s_rendering_finished, idx_data.f_rendering_finished,
         draw_data, render_data, throws);
 
         VkPresentInfoKHR swpch_present_info{};
         swpch_present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        swpch_present_info.waitSemaphoreCount = 1, swpch_present_info.pWaitSemaphores = &idx_data.s_rendering_finished.handle->handle;
+        VkSemaphore sem = idx_data.s_rendering_finished;
+        swpch_present_info.waitSemaphoreCount = 1, swpch_present_info.pWaitSemaphores = &sem;
         swpch_present_info.swapchainCount = 1, swpch_present_info.pSwapchains = &window.swapchain.handle, swpch_present_info.pImageIndices = &swpch_img_idx;
 
         EXIT_IF(vkQueuePresentKHR(device_handle.present_queue, &swpch_present_info) < 0, "FRAME SUBMIT FAILED", DO_NOTHING);
@@ -1320,71 +1389,65 @@ int main()
 
     frame myframe(100, 100, "t", FRAMES_IN_FLIGHT, renderpass, mydev);
 
-    graphics_pipeline_t triangle_pipeline;
+    std::shared_ptr<const graphics_pipeline_t> triangle_pipeline;
+    graphics_pipeline_t::description triangle_pipeline_d;
     {
-        triangle_pipeline.color_blend_state.logic_op_enabled = VK_FALSE;
+        triangle_pipeline_d.color_blend_info.logic_op_enabled = VK_FALSE;
         VkPipelineColorBlendAttachmentState color_attachment{};
         color_attachment.blendEnable = VK_FALSE;
         color_attachment.colorWriteMask = VK_COLOR_COMPONENT_A_BIT | VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT  | VK_COLOR_COMPONENT_B_BIT;
-        triangle_pipeline.color_blend_state.attachment_states.push_back(color_attachment);
+        triangle_pipeline_d.color_blend_info.attachment_states.push_back(color_attachment);
 
-        triangle_pipeline.dynamic_state.dynamic_state_list = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+        triangle_pipeline_d.dynamic_state_info.dynamic_state_list = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
         
-        triangle_pipeline.input_assembly_state.primitive_restart_enabled = VK_FALSE;
-        triangle_pipeline.input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        triangle_pipeline_d.input_assembly_info.primitive_restart_enabled = VK_FALSE;
+        triangle_pipeline_d.input_assembly_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         
-        pipeline_layout_t pplt;
-        pplt.owner = mydev;
-        create_pipeline_layout(pplt);
-        triangle_pipeline.layout = pplt;
+        triangle_pipeline_d.multisample_info.rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
+        triangle_pipeline_d.multisample_info.sample_shading_enable = VK_FALSE;
 
-        triangle_pipeline.ms_state.rasterization_samples = VK_SAMPLE_COUNT_1_BIT;
-        triangle_pipeline.ms_state.sample_shading_enable = VK_FALSE;
+        triangle_pipeline_d.renderpass = *renderpass;
+        triangle_pipeline_d.subpass_index = 0;
+        triangle_pipeline_d.pipeline_cache = VK_NULL_HANDLE;
+        triangle_pipeline_d.rasterization_info.polygon_mode = VK_POLYGON_MODE_FILL;
+        triangle_pipeline_d.rasterization_info.rasterization_discard = VK_FALSE;
+        triangle_pipeline_d.rasterization_info.depth_bias_enable = VK_FALSE;
+        triangle_pipeline_d.rasterization_info.depth_clamp_enable = VK_FALSE;
+        triangle_pipeline_d.rasterization_info.front_face = VK_FRONT_FACE_CLOCKWISE;
+        triangle_pipeline_d.rasterization_info.cull_mode = VK_CULL_MODE_NONE;
 
-        triangle_pipeline.owner = renderpass;
-        triangle_pipeline.subpass_index = 0;
-        triangle_pipeline.pipeline_cache = VK_NULL_HANDLE;
-        triangle_pipeline.rasterization_state.polygon_mode = VK_POLYGON_MODE_FILL;
-        triangle_pipeline.rasterization_state.rasterization_discard = VK_FALSE;
-        triangle_pipeline.rasterization_state.depth_bias_enable = VK_FALSE;
-        triangle_pipeline.rasterization_state.depth_clamp_enable = VK_FALSE;
-        triangle_pipeline.rasterization_state.front_face = VK_FRONT_FACE_CLOCKWISE;
-        triangle_pipeline.rasterization_state.cull_mode = VK_CULL_MODE_NONE;
-
+        //these need to stay alive until the graphics pipeline is created!
+        shader_module_t::description frag_d, vert_d;
         std::vector<char> fragment_code, vertex_code;
         read_binary_file({"shaders/"}, "triangle_no_input_frag.spv", fragment_code);
         read_binary_file({"shaders/"}, "triangle_no_input_vert.spv", vertex_code);
-        shader_module_t frag, vert;
-        frag.byte_code = fragment_code, vert.byte_code = vertex_code;
-        frag.owner = vert.owner = mydev;
-        frag.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        vert.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        frag_d.byte_code = fragment_code, vert_d.byte_code = vertex_code;
+        frag_d.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        vert_d.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        shader_module_t frag(frag_d, mydev), vert(vert_d, mydev);
 
-        create_shader_module(vert);
-        create_shader_module(frag);
+        triangle_pipeline_d.shader_stages_info.resize(2);
+        triangle_pipeline_d.shader_stages_info[0].module = vert;
+        triangle_pipeline_d.shader_stages_info[0].stage  = vert.record.stage;
+        triangle_pipeline_d.shader_stages_info[1].module = frag;
+        triangle_pipeline_d.shader_stages_info[1].stage  = frag.record.stage;
+        triangle_pipeline_d.shader_stages_info[0].entry_point = "main";
+        triangle_pipeline_d.shader_stages_info[1].entry_point = "main";
 
-        triangle_pipeline.shader_modules.resize(2);
-        triangle_pipeline.shader_modules[0].module = *vert.handle;
-        triangle_pipeline.shader_modules[0].stage  = vert.stage;
-        triangle_pipeline.shader_modules[1].module = *frag.handle;
-        triangle_pipeline.shader_modules[1].stage  = frag.stage;
-        triangle_pipeline.shader_modules[0].entry_point = "main";
-        triangle_pipeline.shader_modules[1].entry_point = "main";
+        triangle_pipeline_d.viewport_state_info.scissors.resize(1);
+        triangle_pipeline_d.viewport_state_info.viewports.resize(1);
 
-        triangle_pipeline.viewport_state.scissors.resize(1);
-        triangle_pipeline.viewport_state.viewports.resize(1);
+        triangle_pipeline_d.vertex_input_info.attrib_descriptions.resize(0);
+        triangle_pipeline_d.vertex_input_info.binding_descriptions.resize(0);
 
-        triangle_pipeline.vertex_input_state.attrib_descriptions.resize(0);
-        triangle_pipeline.vertex_input_state.binding_descriptions.resize(0);
-        
-        create_graphics_pipeline(triangle_pipeline);
+        triangle_pipeline = std::make_shared<const graphics_pipeline_t>(triangle_pipeline_d, renderpass);
     }
 
     render_data_t render_data{};
     render_data.clear_values.color = {0.0, 0.0, 0.0, 1.0};
     render_data.clear_values.depthStencil = VkClearDepthStencilValue{};
     render_data.graphics_pipeline = triangle_pipeline;
-    
+
     while(!glfwWindowShouldClose(myframe.window.window_ptr))
     {
         glfwPollEvents();
