@@ -80,7 +80,7 @@ namespace vk_handle
             vk_handle::destroy(handle, description_record);
             handle = handle_t{VK_NULL_HANDLE};
         }
-        desc_t get_description(){return description_record;}
+        desc_t get_description() const {return description_record;}
     };
 
     typedef vk_obj_wrapper<VkInstance, description::instance_desc> instance;

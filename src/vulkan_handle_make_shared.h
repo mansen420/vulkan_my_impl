@@ -5,9 +5,9 @@
 
 #define DEL(handle_t) [](handle_t* X)mutable{ \
     if(*X){X->destroy();}                     \
-    else{INFORM_ERR("WARNING : destroying empty : " << typeid(X).name());}\
+    else{INFORM_ERR("");}                     \
     }                                         \
-
+//WARNING : destroying empty " << typeid(X).name());
 template <typename handle_t> std::shared_ptr<handle_t> make_shared()
 {                                                               
     return std::shared_ptr<handle_t>(new handle_t, DEL(handle_t));  
