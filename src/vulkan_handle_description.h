@@ -8,21 +8,14 @@
 #include <array>
 #include <stdexcept>
 #include <string>
+#include <map>
+
+#include "debug.h"
 
 namespace vk_handle
 {
     namespace description
     {
-        struct queue_fam_property
-        {
-            uint32_t           index;
-            VkQueueFlags       flags;
-            uint32_t max_queue_count;
-        };
-        struct queue_families //Stores indices of queue families that support support various operations
-        {
-            std::optional<queue_fam_property> graphics_fam, present_fam, dedicated_transfer_fam, compute_fam;
-        };
         struct instance_extensions
         {
             std::vector<std::string> extensions;
@@ -63,6 +56,7 @@ namespace vk_handle
             std::vector<const char*> extension_names;
             std::vector<const char*> layer_names;
         };
+ 
         struct debug_messenger_desc
         {
             VkInstance parent;
@@ -94,14 +88,51 @@ namespace vk_handle
             uint32_t           count;
             uint32_t           flags;
         };
+        struct family_index
+        {
+            int index      = -1;
+            uint32_t flags =  0;
+            operator uint32_t() const {return index;}
+            family_index() : index(-1), flags(0) {}
+            family_index(uint32_t index, uint32_t flags) : index(index), flags(flags) {}
+            family_index(const family_index& other)
+            {
+                *this = other;
+            }
+            family_index& operator =(const family_index& rhs)
+            {
+                if(this == &rhs)
+                    return *this;
+                this->index = rhs.index;
+                this->flags |= rhs.flags;
+                return *this;
+            }
+            bool operator < (const family_index& rhs)
+            {
+                return this->index < rhs.index;
+            }
+        };
+        struct family_indices
+        {
+            std::optional<family_index> graphics, compute, present, transfer;
+        };
+        struct queue_desc
+        {
+            uint32_t index_in_family;
+            family_index fam_idx;
+        };
         struct device_desc
         {
             VkPhysicalDevice phys_device;
             std::vector<device_queue>     device_queues{};
             std::vector<std::string> enabled_extensions{};
             VkPhysicalDeviceFeatures   enabled_features{};
-
             
+            queue_desc graphics_queue{};
+            queue_desc transfer_queue{};
+            queue_desc  compute_queue{};
+            queue_desc  present_queue{};
+
             VkDeviceCreateInfo get_create_info()
             {
                 VkDeviceCreateInfo info{};

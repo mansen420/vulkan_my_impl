@@ -53,34 +53,63 @@ namespace vk_handle
     template<typename handle_t, typename desc_t>
     class vk_obj_wrapper
     {
-        desc_t   description_record{};
-
         public :
+
+        desc_t description{};
 
         handle_t handle{VK_NULL_HANDLE};
 
         explicit operator bool() const {return handle != handle_t{VK_NULL_HANDLE};};
         operator handle_t() const {return handle;}
 
-        vk_obj_wrapper() :  description_record(desc_t{}), handle{VK_NULL_HANDLE} {}
+        vk_obj_wrapper(desc_t desc, VkResult& out_result) : description(desc)
+        {
+            init(desc);
+        }
+        vk_obj_wrapper(desc_t desc, bool throws = true) : description(desc)
+        {
+            auto result = init(desc);
+            check(result, throws);
+        }
 
+        vk_obj_wrapper(vk_obj_wrapper&& other)
+        {
+            *this = std::move(other);
+        }
+        vk_obj_wrapper& operator=(vk_obj_wrapper&& other)
+        {
+            if(*this)
+                this->destroy();    //destroy old value
+            this->handle = std::move(other.handle);
+            this->description = std::move(other.description);
+            other.handle = handle_t{VK_NULL_HANDLE};
+            return *this;
+        }
+
+        vk_obj_wrapper() = delete;
+        vk_obj_wrapper(const vk_obj_wrapper&) = delete;
+        vk_obj_wrapper& operator=(const vk_obj_wrapper&) = delete;
+
+        ~vk_obj_wrapper(){destroy();}
+
+        private:
+        bool check(VkResult result, bool throws)
+        {
+            EXIT_IF(result, "Failed to initialize handle", DO_NOTHING)
+            return true;
+        }
         VkResult init(desc_t description)
         {
             if(*this)
-                INFORM_ERR("WARNING : double initialization of : " << typeid(handle).name());
+                INFORM_ERR("WARNING : double initialization " << TYPENAME(handle));
             auto res = vk_handle::init(handle, description);
-            if(res == VK_SUCCESS) //or res >= 0
-                description_record = description;
             return res;
         }
         void destroy()
         {
-            if(handle == handle_t{VK_NULL_HANDLE})
-                INFORM_ERR("WARNING : destroying empty handle of : " << typeid(handle).name());
-            vk_handle::destroy(handle, description_record);
+            vk_handle::destroy(handle, description);
             handle = handle_t{VK_NULL_HANDLE};
         }
-        desc_t get_description() const {return description_record;}
     };
 
     typedef vk_obj_wrapper<VkInstance, description::instance_desc> instance;

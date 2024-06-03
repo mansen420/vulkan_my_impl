@@ -2,11 +2,13 @@
 
 #include <memory>
 
-
+/*
+deprecated due to RAII
 #define DEL(handle_t) [](handle_t* X)mutable{ \
     if(*X){X->destroy();}                     \
     else{INFORM_ERR("WARNING : destroying empty " << typeid(X).name());}\
     }                                         \
+
 
 template <typename handle_t> std::shared_ptr<handle_t> make_shared()
 {                                                               
@@ -18,22 +20,27 @@ template <> std::shared_ptr<handle> make_shared<handle>()\
 {                                                               \
     return std::shared_ptr<handle>(new handle, DEL(handle));    \
 }                                                               \
+*/
 
-MAKE_SHARED(vk_handle::instance)
-MAKE_SHARED(vk_handle::surface)
-MAKE_SHARED(vk_handle::device)
-MAKE_SHARED(vk_handle::swapchain)
-MAKE_SHARED(vk_handle::debug_messenger)
-MAKE_SHARED(vk_handle::image_view)
-MAKE_SHARED(vk_handle::renderpass)
-MAKE_SHARED(vk_handle::framebuffer)
-MAKE_SHARED(vk_handle::shader_module)
-MAKE_SHARED(vk_handle::graphics_pipeline)
-MAKE_SHARED(vk_handle::cmd_pool)
-MAKE_SHARED(vk_handle::cmd_buffers)
-MAKE_SHARED(vk_handle::semaphore)
-MAKE_SHARED(vk_handle::fence)
-MAKE_SHARED(vk_handle::buffer)
+#define CONST_SHARED_DECL(TYPENAME) typedef std::shared_ptr<const vk_handle:: TYPENAME> shared_ ## TYPENAME ;
+namespace vk_handle
+{
+    CONST_SHARED_DECL(instance)
+    CONST_SHARED_DECL(surface)
+    CONST_SHARED_DECL(device)
+    CONST_SHARED_DECL(swapchain)
+    CONST_SHARED_DECL(debug_messenger)
+    CONST_SHARED_DECL(image_view)
+    CONST_SHARED_DECL(renderpass)
+    CONST_SHARED_DECL(framebuffer)
+    CONST_SHARED_DECL(shader_module)
+    CONST_SHARED_DECL(graphics_pipeline)
+    CONST_SHARED_DECL(cmd_pool)
+    CONST_SHARED_DECL(cmd_buffers)
+    CONST_SHARED_DECL(semaphore)
+    CONST_SHARED_DECL(fence)
+    CONST_SHARED_DECL(buffer)
+}
 
 
 #undef MAKE_SHARED

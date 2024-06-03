@@ -300,33 +300,7 @@ inline vk_handle::description::renderpass_desc get_simple_renderpass_description
 
     return description;
 }
-inline std::vector<vk_handle::description::device_queue> get_device_queues(vk_handle::description::queue_families fam_indices)
-{
-    std::set<uint32_t> indices = {fam_indices.graphics_fam.value().index, fam_indices.present_fam.value().index,
-    fam_indices.dedicated_transfer_fam.has_value() ? fam_indices.dedicated_transfer_fam.value().index : 
-    fam_indices.graphics_fam.value().index}; //if dedicated transfer has no value, this will be ignored
-    
-    std::vector<vk_handle::description::device_queue> device_queues;
-    
-    for(const auto& index: indices)
-    {
-        vk_handle::description::device_queue queue;
-        queue.family_index = index;
-        queue.count = 1;
-        if(fam_indices.dedicated_transfer_fam.has_value() && index == fam_indices.dedicated_transfer_fam.value().index)
-            queue.flags |= vk_handle::description::TRANSFER_BIT;
-        if(index == fam_indices.graphics_fam.value().index)
-        {
-            queue.flags |= vk_handle::description::GRAPHICS_BIT;
-            queue.count += fam_indices.dedicated_transfer_fam.has_value() ? 0 : 1;
-            queue.count = std::clamp(queue.count, (uint32_t)0, fam_indices.graphics_fam.value().max_queue_count);
-        }
-        if(index == fam_indices.present_fam.value().index)
-            queue.flags |= vk_handle::description::PRESENT_BIT;
-        device_queues.push_back(queue);
-    }
-    return device_queues;
-}
+
 inline vk_handle::description::surface_support get_swapchain_support(VkPhysicalDevice phys_device, VkSurfaceKHR surface)
 {
     vk_handle::description::surface_support support;
