@@ -655,7 +655,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     vk::shared_device device(std::make_shared<vk::device>(get::device::description(*VULKAN, 
     get::physical_device::pick_best_physical_device(PHYSICAL_DEVICES))));
 
-    constexpr uint FRAMES_IN_FLIGHT = 1;
+    constexpr uint FRAMES_IN_FLIGHT = 2;
 
     frame my_frame(150, 150, "title", FRAMES_IN_FLIGHT, device);
 
@@ -667,4 +667,5 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         my_frame.draw_frames(render_triangles, render_data);
     }
     vkDeviceWaitIdle(*device);
+    return 0;
 }
