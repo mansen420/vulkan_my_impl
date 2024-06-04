@@ -332,8 +332,9 @@ const VkRenderPassBeginInfo renderpass_binfo, uint frame_index, const render_dat
 
     VkDeviceSize offset{0};
     vkCmdBindVertexBuffers(cmd_buffer, 0, 1, &render_data.vertex_buffer.handle, &offset);
+    vkCmdBindIndexBuffer(cmd_buffer, render_data.index_buffer, 0, VK_INDEX_TYPE_UINT32);
 
-    vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
+    vkCmdDrawIndexed(cmd_buffer, INDICES.size(), 1, 0, 0, 0);
     vkCmdEndRenderPass(cmd_buffer);
 
     EXIT_IF(vkEndCommandBuffer(cmd_buffer), "FAILED TO END CMD BUFFER", DO_NOTHING);
@@ -757,6 +758,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     void* ptr;
     vmaMapMemory(staging_buffer.description.allocator, staging_buffer.description.allocation_object, &ptr);
     memcpy(ptr, TRIANGLE_VERTICES.data(), vertex_buffer.description.size);
+    memcpy(ptr + vertex_buffer.description.size, INDICES.data(), index_buffer.description.size);
     vmaUnmapMemory(staging_buffer.description.allocator, staging_buffer.description.allocation_object);
 
     vk::cmd_pool staging_pool(data::cmd_pool_desc
@@ -777,13 +779,20 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
     };
     vkBeginCommandBuffer(staging_commands.handle[0], &b_info);
-    VkBufferCopy copy_info
-    {
+    std::vector<VkBufferCopy> copy_info;
+    copy_info.push_back(VkBufferCopy{
         .srcOffset = 0,
         .dstOffset = 0,
         .size      = vertex_buffer.description.size
-    };
-    vkCmdCopyBuffer(staging_commands.handle[0], staging_buffer, vertex_buffer, 1, &copy_info);
+    });
+    copy_info.push_back(VkBufferCopy{
+        .srcOffset = vertex_buffer.description.size,
+        .dstOffset = 0,
+        .size      = index_buffer.description.size
+    }); 
+    vkCmdCopyBuffer(staging_commands.handle[0], staging_buffer, vertex_buffer, 1, &copy_info[0]);
+    vkCmdCopyBuffer(staging_commands.handle[0], staging_buffer, index_buffer,  1, &copy_info[1]);
+
     vkEndCommandBuffer(staging_commands.handle[0]);
     VkSubmitInfo submit_info
     {
