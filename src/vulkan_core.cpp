@@ -1,6 +1,7 @@
 #include "volk.h"
 #include "GLFW/glfw3.h" 
 #include "glm/glm.hpp"
+#include "vk_mem_alloc.h"
 
 #include "vulkan_handle.h"
 #include "vulkan_handle_make_shared.h"
@@ -172,6 +173,45 @@ public:
 };
 uint vulkan_context::copies = 0;
 
+
+struct vertex
+{
+    glm::vec2   pos;
+    glm::vec3 color;
+};
+const std::vector<vertex> TRIANGLE_VERTICES = {
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+};
+const std::vector<uint32_t> INDICES = {
+    0, 1, 2, 2, 3, 0
+};
+
+template <typename vertex_t> VkVertexInputBindingDescription get_per_vertex_binding_description(uint32_t binding)
+{
+    VkVertexInputBindingDescription description{};
+
+    description.binding = binding;
+    description.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    description.stride = sizeof(vertex_t);
+
+    return description;
+}
+template <typename vertex_t> std::vector<VkVertexInputAttributeDescription> get_attrib_description(uint32_t binding);
+template<> 
+std::vector<VkVertexInputAttributeDescription> get_attrib_description<vertex> (uint32_t binding)
+{
+    std::vector<VkVertexInputAttributeDescription> descriptions(2);
+    descriptions[0].binding  = binding, descriptions[1].binding  = binding;
+    descriptions[0].location = 0      , descriptions[1].location = 1;
+    descriptions[0].format   = VK_FORMAT_R32G32_SFLOAT      , descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    descriptions[0].offset   = offsetof(vertex, vertex::pos), descriptions[1].offset = offsetof(vertex, vertex::color);
+    return descriptions;
+}
+
+
 struct render_data_t
 {
     vk::shader_module              fragment_shader;
@@ -184,13 +224,19 @@ struct render_data_t
 
     VkQueue                        submit_queue;
 
-    render_data_t(const vk::device& device, VkRenderPass renderpass, uint concurrent_cmd_buffers) : 
-    fragment_shader(get_shader_desc("triangle_no_input_frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT, device)),
-    vertex_shader(get_shader_desc("triangle_no_input_vert.spv", VK_SHADER_STAGE_VERTEX_BIT, device)),
+    vk::buffer vertex_buffer;
+    vk::buffer index_buffer;
+    
+    render_data_t(const vk::device& device, VkRenderPass renderpass, uint concurrent_cmd_buffers, vk::buffer& v_buffer,
+    vk::buffer& index_buffer) : 
+    fragment_shader(get_shader_desc("triangle_frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT, device)),
+    vertex_shader(get_shader_desc("triangle_vert.spv", VK_SHADER_STAGE_VERTEX_BIT, device)),
     pipeline_layout(data::pipeline_layout_desc{device}),
     graphics_pipeline({get_pipeline_desc(renderpass, pipeline_layout, {vertex_shader, fragment_shader}, device)}),
-    command_pool(data::cmd_pool_desc{device, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, device.description.graphics_queue.fam_idx}),
-    command_buffers(data::cmd_buffers_desc{device, command_pool, concurrent_cmd_buffers, VK_COMMAND_BUFFER_LEVEL_PRIMARY})
+    command_pool(data::cmd_pool_desc{.parent = device, .queue_fam_index = device.description.graphics_queue.fam_idx, 
+    .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT}),
+    command_buffers(data::cmd_buffers_desc{device, command_pool, concurrent_cmd_buffers, VK_COMMAND_BUFFER_LEVEL_PRIMARY}),
+    vertex_buffer(std::move(v_buffer)), index_buffer(std::move(index_buffer))
     {
         submit_queue = get::device::queue_handle(device, device.description.graphics_queue);
     }
@@ -251,8 +297,8 @@ struct render_data_t
             triangle_pipeline_d.viewport_state_info.scissors.resize(1);
             triangle_pipeline_d.viewport_state_info.viewports.resize(1);
 
-            triangle_pipeline_d.vertex_input_info.attrib_descriptions.resize(0);
-            triangle_pipeline_d.vertex_input_info.binding_descriptions.resize(0);
+            triangle_pipeline_d.vertex_input_info.attrib_descriptions  = get_attrib_description<vertex>(0);
+            triangle_pipeline_d.vertex_input_info.binding_descriptions.push_back(get_per_vertex_binding_description<vertex>(0));
 
             triangle_pipeline_d.parent = device;
             triangle_pipeline_d.pipeline_layout = layout;
@@ -269,6 +315,7 @@ const VkRenderPassBeginInfo renderpass_binfo, uint frame_index, const render_dat
 {
     VkCommandBufferBeginInfo begin_info{};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     
     const auto& cmd_buffer = render_data.command_buffers.handle[frame_index];
 
@@ -282,6 +329,9 @@ const VkRenderPassBeginInfo renderpass_binfo, uint frame_index, const render_dat
     vkCmdSetViewport(cmd_buffer, 0, 1, &viewport);
     VkRect2D scissor{renderpass_binfo.renderArea};
     vkCmdSetScissor(cmd_buffer, 0, 1, &scissor);
+
+    VkDeviceSize offset{0};
+    vkCmdBindVertexBuffers(cmd_buffer, 0, 1, &render_data.vertex_buffer.handle, &offset);
 
     vkCmdDraw(cmd_buffer, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd_buffer);
@@ -639,20 +689,6 @@ private:
 //In addition with the frame sending its own command buffer to the render function, this would eliminate the need for explicit synchronization.
 
 
-
-struct vertex
-{
-    glm::vec2   pos;
-    glm::vec3 color;
-};
-const std::vector<vertex> TRIANGLE_VERTICES
-{
-    {{ 0.0f, -0.5f}, {1.f, 0.f, 0.f}},
-    {{ 0.5f,  0.5f}, {0.f, 1.f, 0.f}},
-    {{-0.5f,  0.5f}, {0.f, 0.f, 1.f}}
-};
-
-
 //remember, this is a thin vulkan abstraction :>
 int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
@@ -662,20 +698,105 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     vk::shared_device device(std::make_shared<vk::device>(get::device::description(*VULKAN, 
     get::physical_device::pick_best_physical_device(PHYSICAL_DEVICES))));
 
+    auto funcs = get::vma_functions();
+    vk::allocator allocator (VmaAllocatorCreateInfo{
+        .physicalDevice   = device->description.phys_device,
+        .device           = *device,
+        .pVulkanFunctions = &funcs,
+        .instance         = *VULKAN
+    });
+
     constexpr uint FRAMES_IN_FLIGHT = 2;
 
     frame my_frame(150, 150, "title", FRAMES_IN_FLIGHT, device);
     
-    render_data_t render_data(*device, my_frame.get_renderpass(), FRAMES_IN_FLIGHT);
-
-    data::buffer_desc vtx_description{};
+    vk::buffer vertex_buffer(data::buffer_desc
     {
-        vtx_description.parent = *device;
-        vtx_description.queue_fam_indices.push_back(device->description.graphics_queue.fam_idx);
-        vtx_description.usage  = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        vtx_description.size   = sizeof(vertex) * TRIANGLE_VERTICES.size();
-    }
-    vk::buffer vertex_buffer(vtx_description);
+        .parent    = *device,
+        .allocator = allocator,
+        .alloc_info = VmaAllocationCreateInfo
+        {
+            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+            .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            .pool = VK_NULL_HANDLE
+        },
+        .size = sizeof(vertex) * TRIANGLE_VERTICES.size(),
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .queue_fam_indices = {device->description.graphics_queue.fam_idx}
+    });
+    vk::buffer index_buffer(data::buffer_desc
+    {
+        .parent    = *device,
+        .allocator = allocator,
+        .alloc_info = VmaAllocationCreateInfo
+        {
+            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+            .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            .pool = VK_NULL_HANDLE
+        },
+        .size = sizeof(uint32_t) * INDICES.size(),
+        .usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .queue_fam_indices = {device->description.graphics_queue.fam_idx}
+    });
+    vk::buffer staging_buffer(data::buffer_desc
+    {
+        .parent    = *device,
+        .allocator = allocator,
+        .alloc_info = VmaAllocationCreateInfo
+        {
+            .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+            .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+            .requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            .pool = VK_NULL_HANDLE
+        },
+        .size = vertex_buffer.description.size + index_buffer.description.size,
+        .usage =  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .queue_fam_indices = {device->description.transfer_queue.fam_idx}
+    });
+    
+    void* ptr;
+    vmaMapMemory(staging_buffer.description.allocator, staging_buffer.description.allocation_object, &ptr);
+    memcpy(ptr, TRIANGLE_VERTICES.data(), vertex_buffer.description.size);
+    vmaUnmapMemory(staging_buffer.description.allocator, staging_buffer.description.allocation_object);
+
+    vk::cmd_pool staging_pool(data::cmd_pool_desc
+    {
+        .parent = *device,
+        .queue_fam_index = device->description.transfer_queue.fam_idx,
+        .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT
+    });
+    vk::cmd_buffers staging_commands(data::cmd_buffers_desc
+    {
+        .parent = *device,
+        .cmd_pool = staging_pool,
+        .buffer_count = 1,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY
+    });
+    VkCommandBufferBeginInfo b_info
+    {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+    };
+    vkBeginCommandBuffer(staging_commands.handle[0], &b_info);
+    VkBufferCopy copy_info
+    {
+        .srcOffset = 0,
+        .dstOffset = 0,
+        .size      = vertex_buffer.description.size
+    };
+    vkCmdCopyBuffer(staging_commands.handle[0], staging_buffer, vertex_buffer, 1, &copy_info);
+    vkEndCommandBuffer(staging_commands.handle[0]);
+    VkSubmitInfo submit_info
+    {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &staging_commands.handle[0]
+    };
+    auto queue_handle = get::device::queue_handle(*device, device->description.transfer_queue);
+    vkQueueSubmit(queue_handle, 1, &submit_info, VK_NULL_HANDLE);
+
+    vkQueueWaitIdle(queue_handle);
+
+    render_data_t render_data(*device, my_frame.get_renderpass(), FRAMES_IN_FLIGHT, vertex_buffer, index_buffer);
 
     while(!glfwWindowShouldClose(my_frame.get_window_handle()))
     {

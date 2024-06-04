@@ -1,6 +1,7 @@
 #pragma once
 
 #include "volk.h"
+#include "vk_mem_alloc.h"
 
 #include <optional>
 #include <vector>
@@ -11,6 +12,7 @@
 #include <map>
 
 #include "debug.h"
+
 
 namespace vk_handle
 {
@@ -657,8 +659,9 @@ namespace vk_handle
         {
             VkDevice parent;
 
-            VkCommandPoolCreateFlags flags;
             uint32_t       queue_fam_index;
+
+            VkCommandPoolCreateFlags flags;
 
             VkCommandPoolCreateInfo get_create_info()
             {
@@ -715,13 +718,22 @@ namespace vk_handle
         {
             VkDevice parent;
 
+            VmaAllocator allocator;
+            VmaAllocationCreateInfo alloc_info{};
+
             VkDeviceSize size;
             VkBufferUsageFlags usage;
 
             std::vector<uint32_t> queue_fam_indices;
-            
+
+
+
             std::optional<VkSharingMode> sharing_mode;
             std::optional<VkBufferCreateFlags> flags;
+
+            //we store this object here just for VMA. Don't mess with this.
+            VmaAllocation allocation_object;
+
             VkBufferCreateInfo get_create_info()
             {
                 VkBufferCreateInfo create_info{};
@@ -741,8 +753,10 @@ namespace vk_handle
                 return create_info;
             }
         };
-        struct memory_alloc_info
+        struct memory_desc
         {
+            VkDevice parent;
+
             VkDeviceSize     size;
             uint32_t memory_type_index;
             VkMemoryAllocateInfo get_info()
@@ -754,8 +768,8 @@ namespace vk_handle
                 info.memoryTypeIndex = memory_type_index;
                 return info;
             }
+        };
         }
-    }
 
 } 
     

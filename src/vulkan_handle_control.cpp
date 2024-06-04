@@ -92,10 +92,20 @@ VkResult vk_handle::init(VkFence& handle, description::fence_desc desc)
     auto info = desc.get_create_info();
     return vkCreateFence(desc.parent, &info, nullptr, &handle);
 }
-VkResult vk_handle::init(VkBuffer& handle, description::buffer_desc desc)
+VkResult vk_handle::init(VkBuffer& handle, description::buffer_desc& desc)
 {
     auto info = desc.get_create_info();
-    return vkCreateBuffer(desc.parent, &info, nullptr, &handle);
+    return vmaCreateBuffer(desc.allocator, &info, &desc.alloc_info,
+    &handle, &desc.allocation_object, nullptr);
+}
+VkResult vk_handle::init(VkDeviceMemory& handle, description::memory_desc desc)
+{
+    auto info = desc.get_info();
+    return vkAllocateMemory(desc.parent, &info, nullptr, &handle);
+}
+VkResult vk_handle::init(VmaAllocator& handle, VmaAllocatorCreateInfo description)
+{
+    return vmaCreateAllocator(&description, &handle);
 }
 
 
@@ -175,5 +185,13 @@ void vk_handle::destroy(VkFence handle, description::fence_desc desc)
 }
 void vk_handle::destroy(VkBuffer handle, description::buffer_desc desc)
 {
-    vkDestroyBuffer(desc.parent, handle, nullptr);
+    vmaDestroyBuffer(desc.allocator, handle, desc.allocation_object);
+}
+void vk_handle::destroy(VkDeviceMemory handle, description::memory_desc desc)
+{
+    vkFreeMemory(desc.parent, handle, nullptr);
+}
+void vk_handle::destroy(VmaAllocator handle, [[maybe_unused]] VmaAllocatorCreateInfo description)
+{
+    vmaDestroyAllocator(handle);
 }

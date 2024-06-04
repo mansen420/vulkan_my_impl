@@ -9,14 +9,14 @@
 
 namespace vk_handle::data_getters
 {
-    namespace instance
+    struct instance
     {
         enum extension_enable_flag_bits
         {
             GLFW              = 0b0001,
             DEBUG             = 0b0010,
         };
-        std::vector<std::string> get_required_extension_names(uint flags)
+        static std::vector<std::string> get_required_extension_names(uint flags)
         {
             std::vector<std::string> names;
             if(flags & GLFW)
@@ -31,14 +31,14 @@ namespace vk_handle::data_getters
                 names.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
             return names;
         }
-        std::vector<std::string> get_required_layer_names(uint flags)
+        static std::vector<std::string> get_required_layer_names(uint flags)
         {
             std::vector<std::string> names;
             if(flags & DEBUG)
                 names.push_back("VK_LAYER_KHRONOS_validation");
             return names;
         }
-        std::vector<std::string> get_available_instance_extension_names()
+        static std::vector<std::string> get_available_instance_extension_names()
         {
             uint32_t count;
             vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
@@ -51,7 +51,7 @@ namespace vk_handle::data_getters
             delete[] ptr;
             return names;
         }
-        std::vector<std::string> get_available_instance_layers_names()
+        static std::vector<std::string> get_available_instance_layers_names()
         {
             uint32_t count;
             vkEnumerateInstanceLayerProperties(&count, nullptr);
@@ -63,7 +63,7 @@ namespace vk_handle::data_getters
             delete[] ptr;
             return names;
         }
-        vk_handle::description::instance_desc get_instance_description(uint ext_flags, uint layer_flags)
+        static vk_handle::description::instance_desc get_instance_description(uint ext_flags, uint layer_flags)
         {
             vk_handle::description::instance_desc description{};
 
@@ -91,11 +91,12 @@ namespace vk_handle::data_getters
             
             return description;
         }
+
     };
 
-    namespace physical_device
+    struct physical_device
     {
-        std::vector<VkPhysicalDevice> find_physical_devices(VkInstance instance)
+        static std::vector<VkPhysicalDevice> find_physical_devices(VkInstance instance)
         {
             std::vector<VkPhysicalDevice> physical_devices;
             auto handles = get_physical_device_handles(instance);
@@ -108,14 +109,14 @@ namespace vk_handle::data_getters
             }
             return physical_devices;
         }
-        bool supports_extensions(VkPhysicalDevice device, std::vector<std::string> extensions)
+        static bool supports_extensions(VkPhysicalDevice device, std::vector<std::string> extensions)
         {
             auto props = get_properties(device);
             INFORM(props.deviceName << " : ");
             auto avlbl_ext = get_available_extensions(device);
             return check_support(avlbl_ext, extensions);
         }
-        VkPhysicalDevice pick_best_physical_device(std::vector<VkPhysicalDevice> devices)
+        static VkPhysicalDevice pick_best_physical_device(std::vector<VkPhysicalDevice> devices)
         {
             std::map<VkDeviceSize, VkPhysicalDevice> device_memory_size; //sorted ascending
             for(size_t i = 0; i < devices.size(); ++i)
@@ -140,7 +141,7 @@ namespace vk_handle::data_getters
 
             return picked_device;
         }
-        VkDeviceSize get_local_memory_size(VkPhysicalDevice physical_device)
+        static VkDeviceSize get_local_memory_size(VkPhysicalDevice physical_device)
         {
             VkDeviceSize device_memory_size{};
             auto mem_props = get_memory_properties(physical_device);
@@ -154,7 +155,7 @@ namespace vk_handle::data_getters
         {
             SWAPCHAIN         = 0b001
         };
-        std::vector<std::string> get_required_extension_names(uint flags)
+        static std::vector<std::string> get_required_extension_names(uint flags)
         {
             std::vector<std::string> names;
             if(flags & SWAPCHAIN)
@@ -162,7 +163,7 @@ namespace vk_handle::data_getters
             return names;
         }
 
-        std::vector<VkQueueFamilyProperties> get_queue_fams(VkPhysicalDevice handle)
+        static std::vector<VkQueueFamilyProperties> get_queue_fams(VkPhysicalDevice handle)
         {
             std::vector<VkQueueFamilyProperties> queue_fams;
             uint32_t count;
@@ -171,7 +172,7 @@ namespace vk_handle::data_getters
             vkGetPhysicalDeviceQueueFamilyProperties(handle, &count, queue_fams.data());
             return queue_fams;
         }
-        std::vector<std::string> get_available_extensions(VkPhysicalDevice handle)
+        static std::vector<std::string> get_available_extensions(VkPhysicalDevice handle)
         {
             std::vector<std::string> available_extensions;
             uint32_t count;
@@ -185,26 +186,26 @@ namespace vk_handle::data_getters
             delete[] ptr;
             return available_extensions;
         }
-        VkPhysicalDeviceMemoryProperties get_memory_properties(VkPhysicalDevice handle)
+        static VkPhysicalDeviceMemoryProperties get_memory_properties(VkPhysicalDevice handle)
         {
             VkPhysicalDeviceMemoryProperties memory_properties;
             vkGetPhysicalDeviceMemoryProperties(handle, &memory_properties);
             return memory_properties;
         }
-        VkPhysicalDeviceProperties get_properties(VkPhysicalDevice handle)
+        static VkPhysicalDeviceProperties get_properties(VkPhysicalDevice handle)
         {
             VkPhysicalDeviceProperties f;
             vkGetPhysicalDeviceProperties(handle, &f);
             return f;
         }
-        VkPhysicalDeviceFeatures get_features(VkPhysicalDevice handle)
+        static VkPhysicalDeviceFeatures get_features(VkPhysicalDevice handle)
         {
             VkPhysicalDeviceFeatures f;
             vkGetPhysicalDeviceFeatures(handle, &f);
             return f;
         }
         //don't call this frequently
-        vk_handle::description::surface_features get_surface_features(VkInstance instance, VkPhysicalDevice handle)
+        static vk_handle::description::surface_features get_surface_features(VkInstance instance, VkPhysicalDevice handle)
         {
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
             auto glfw = glfwCreateWindow(1, 1, "", nullptr, nullptr);
@@ -215,15 +216,15 @@ namespace vk_handle::data_getters
         }
     };
 
-    namespace device
+    struct device
     {
-        VkQueue queue_handle(const VkDevice device, const vk_handle::description::queue_desc queue_desc)
+        static VkQueue queue_handle(const VkDevice device, const vk_handle::description::queue_desc queue_desc)
         {
             VkQueue handle;
             vkGetDeviceQueue(device, queue_desc.fam_idx, queue_desc.index_in_family, &handle);
             return handle;
         }
-        bool find_queue_indices(const VkInstance instance, const VkPhysicalDevice phys_device, vk_handle::description::family_indices& indices,
+        static bool find_queue_indices(const VkInstance instance, const VkPhysicalDevice phys_device, vk_handle::description::family_indices& indices,
         bool throws = true)
         {
             auto queue_fams = physical_device::get_queue_fams(phys_device);
@@ -272,7 +273,7 @@ namespace vk_handle::data_getters
 
         //sets the queue members of device and the value you should pass to the handle's description
         //this function does too much. It should be split into two functions
-        bool determine_queues(const VkInstance instance, vk_handle::description::device_desc& device, VkPhysicalDevice phys_dev,
+        static bool determine_queues(const VkInstance instance, vk_handle::description::device_desc& device, VkPhysicalDevice phys_dev,
         std::vector<vk_handle::description::device_queue>& device_queues, bool throws = true)
         {
             using namespace vk_handle::description;
@@ -370,7 +371,7 @@ namespace vk_handle::data_getters
             
             return true;
         }
-        void report_device_queues(const vk_handle::device& device)
+        static void report_device_queues(const vk_handle::device& device)
         {
             auto list_queue_props = [](const vk_handle::description::queue_desc& q)
             {
@@ -387,7 +388,7 @@ namespace vk_handle::data_getters
             list_queue_props(desc.present_queue);
         }
         
-        vk_handle::description::device_desc description(const VkInstance instance, const VkPhysicalDevice phys_device)
+        static vk_handle::description::device_desc description(const VkInstance instance, const VkPhysicalDevice phys_device)
         {
             vk_handle::description::device_desc description{};
             description.enabled_features   = physical_device::get_features(phys_device);
@@ -400,9 +401,9 @@ namespace vk_handle::data_getters
         }
     };
 
-    namespace swapchain
+    struct swapchain
     {
-        vk_handle::description::swapchain_desc description(const vk_handle::surface& srf, const vk_handle::device& device, VkSwapchainKHR old_swapchain = VK_NULL_HANDLE)
+        static vk_handle::description::swapchain_desc description(const vk_handle::surface& srf, const vk_handle::device& device, VkSwapchainKHR old_swapchain = VK_NULL_HANDLE)
         {
             vk_handle::description::swapchain_desc desc{};
             desc.surface = srf;
@@ -415,10 +416,10 @@ namespace vk_handle::data_getters
         }
     };
 
-    namespace memory
+    struct memory
     {
         //determines index in physical device memory properties for this buffer's requirements with a user-defined bitmask
-        uint32_t get_memory_type_index(uint32_t memory_type_bitmask, VkMemoryRequirements mem_reqs, VkPhysicalDevice phys_dev)
+        static uint32_t type_index(uint32_t memory_type_bitmask, VkMemoryRequirements mem_reqs, VkPhysicalDevice phys_dev)
         {
             VkPhysicalDeviceMemoryProperties mem_properties;
             vkGetPhysicalDeviceMemoryProperties(phys_dev, &mem_properties);
@@ -436,16 +437,36 @@ namespace vk_handle::data_getters
             }
             throw std::runtime_error("Failed to find memory index for buffer");
         }
-        VkMemoryAllocateInfo get_mem_alloc_info(uint32_t memory_type_bitmask, VkBuffer buffer, VkDevice parent, VkPhysicalDevice phys_dev)
-        {
-            VkMemoryAllocateInfo info{};
-            info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            VkMemoryRequirements mem_reqs;
-            vkGetBufferMemoryRequirements(parent, buffer, &mem_reqs);
-            info.memoryTypeIndex = get_memory_type_index(memory_type_bitmask, mem_reqs, phys_dev);
-            info.allocationSize  = mem_reqs.size;
-            info.pNext = nullptr;
-            return info;
-        }
+    };
+    VmaVulkanFunctions vma_functions ()
+    {
+        VmaVulkanFunctions vma_funcs;
+        vma_funcs.vkBindBufferMemory2KHR = vkBindBufferMemory2KHR;
+        vma_funcs.vkBindBufferMemory     = vkBindBufferMemory;
+        vma_funcs.vkBindImageMemory2KHR  = vkBindImageMemory2KHR;
+        vma_funcs.vkBindImageMemory      = vkBindImageMemory;
+        vma_funcs.vkCmdCopyBuffer        = vkCmdCopyBuffer;
+        vma_funcs.vkCreateBuffer         = vkCreateBuffer;
+        vma_funcs.vkCreateImage          = vkCreateImage;
+        vma_funcs.vkAllocateMemory       = vkAllocateMemory;
+        vma_funcs.vkDestroyBuffer        = vkDestroyBuffer;
+        vma_funcs.vkDestroyImage         = vkDestroyImage;
+        vma_funcs.vkFlushMappedMemoryRanges = vkFlushMappedMemoryRanges;
+        vma_funcs.vkFreeMemory              = vkFreeMemory;     
+        vma_funcs.vkGetBufferMemoryRequirements2KHR       = vkGetBufferMemoryRequirements2KHR;
+        vma_funcs.vkGetBufferMemoryRequirements           = vkGetBufferMemoryRequirements;
+        vma_funcs.vkGetDeviceBufferMemoryRequirements     = vkGetDeviceBufferMemoryRequirements;
+        vma_funcs.vkGetDeviceImageMemoryRequirements      = vkGetDeviceImageMemoryRequirements;
+        vma_funcs.vkGetDeviceProcAddr                     = vkGetDeviceProcAddr;
+        vma_funcs.vkGetImageMemoryRequirements2KHR        = vkGetImageMemoryRequirements2KHR;
+        vma_funcs.vkGetImageMemoryRequirements            = vkGetImageMemoryRequirements;
+        vma_funcs.vkGetInstanceProcAddr                   = vkGetInstanceProcAddr;
+        vma_funcs.vkGetPhysicalDeviceMemoryProperties2KHR = vkGetPhysicalDeviceMemoryProperties2KHR;
+        vma_funcs.vkGetPhysicalDeviceMemoryProperties     = vkGetPhysicalDeviceMemoryProperties;
+        vma_funcs.vkGetPhysicalDeviceProperties           = vkGetPhysicalDeviceProperties;
+        vma_funcs.vkInvalidateMappedMemoryRanges          = vkInvalidateMappedMemoryRanges;
+        vma_funcs.vkMapMemory   = vkMapMemory;
+        vma_funcs.vkUnmapMemory = vkUnmapMemory;
+        return vma_funcs;
     }
 }

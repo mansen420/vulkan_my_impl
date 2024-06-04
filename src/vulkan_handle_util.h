@@ -207,6 +207,7 @@ inline vk_handle::description::surface_support get_swapchain_support(VkPhysicalD
 }
 
 
+
 inline VkExtent2D get_window_extent(GLFWwindow* window_ptr)
 {
     int width, height;

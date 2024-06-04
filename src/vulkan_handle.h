@@ -3,6 +3,8 @@
 #include "vulkan_handle_description.h"
 #include "debug.h"
 
+#include "vk_mem_alloc.h"
+
 namespace vk_handle
 {
 
@@ -18,13 +20,14 @@ namespace vk_handle
     INIT_DECLARATION(VkShaderModule          , shader_module_desc)
     VkResult init(std::vector<VkPipeline>& handle, std::vector<description::graphics_pipeline_desc> description);
     INIT_DECLARATION(VkPipelineLayout, pipeline_layout_desc)    
-    INIT_DECLARATION(VkFramebuffer, framebuffer_desc)    
-    INIT_DECLARATION(VkCommandPool, cmd_pool_desc)
+    INIT_DECLARATION(VkFramebuffer   , framebuffer_desc)    
+    INIT_DECLARATION(VkCommandPool   , cmd_pool_desc)
     INIT_DECLARATION(std::vector<VkCommandBuffer>, cmd_buffers_desc)    
-    INIT_DECLARATION(VkSemaphore, semaphore_desc)    
-    INIT_DECLARATION(VkFence, fence_desc)    
-    INIT_DECLARATION(VkBuffer, buffer_desc)    
-
+    INIT_DECLARATION(VkSemaphore      , semaphore_desc)    
+    INIT_DECLARATION(VkFence          , fence_desc)    
+    INIT_DECLARATION(VkBuffer         , buffer_desc&)    
+    INIT_DECLARATION(VkDeviceMemory   , memory_desc)
+    VkResult init(VmaAllocator& handle, VmaAllocatorCreateInfo description);
 
 #undef INIT_DECLARATION
 
@@ -47,7 +50,9 @@ namespace vk_handle
     DEST_DECLARATION(VkRenderPass, renderpass_desc)
     DEST_DECLARATION(VkFence, fence_desc)
     DEST_DECLARATION(VkBuffer, buffer_desc)
-
+    DEST_DECLARATION(VkDeviceMemory, memory_desc)
+    void destroy(VmaAllocator handle, VmaAllocatorCreateInfo description);
+    
 #undef DEST_DECLARATION 
 
     template<typename handle_t, typename desc_t>
@@ -62,13 +67,13 @@ namespace vk_handle
         explicit operator bool() const {return handle != handle_t{VK_NULL_HANDLE};};
         operator handle_t() const {return handle;}
 
-        vk_obj_wrapper(desc_t desc, VkResult& out_result) : description(desc)
+        [[no_discard]] vk_obj_wrapper(desc_t desc, VkResult& out_result) : description(desc)
         {
             init(desc);
         }
-        vk_obj_wrapper(desc_t desc, bool throws = true) : description(desc)
+        [[no_discard]] vk_obj_wrapper(desc_t desc, bool throws = true) : description(desc)
         {
-            auto result = init(desc);
+            auto result = init(description);
             check(result, throws);
         }
 
@@ -98,7 +103,7 @@ namespace vk_handle
             EXIT_IF(result, "Failed to initialize handle", DO_NOTHING)
             return true;
         }
-        VkResult init(desc_t description)
+        VkResult init(desc_t& description)
         {
             if(*this)
                 INFORM_ERR("WARNING : double initialization " << TYPENAME(handle));
@@ -107,6 +112,8 @@ namespace vk_handle
         }
         void destroy()
         {
+            if(!(*this))
+                return;
             vk_handle::destroy(handle, description);
             handle = handle_t{VK_NULL_HANDLE};
         }
@@ -128,4 +135,6 @@ namespace vk_handle
     typedef vk_obj_wrapper<VkSemaphore, description::semaphore_desc> semaphore;
     typedef vk_obj_wrapper<VkFence, description::fence_desc> fence;
     typedef vk_obj_wrapper<VkBuffer, description::buffer_desc> buffer;
+    typedef vk_obj_wrapper<VkDeviceMemory, description::memory_desc> memory;
+    typedef vk_obj_wrapper<VmaAllocator, VmaAllocatorCreateInfo> allocator;
 }
