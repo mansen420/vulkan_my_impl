@@ -741,6 +741,20 @@ namespace vk_handle
                 return create_info;
             }
         };
+        struct memory_alloc_info
+        {
+            VkDeviceSize     size;
+            uint32_t memory_type_index;
+            VkMemoryAllocateInfo get_info()
+            {
+                VkMemoryAllocateInfo info{};
+                info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+                info.pNext = nullptr;
+                info.allocationSize  = size;
+                info.memoryTypeIndex = memory_type_index;
+                return info;
+            }
+        }
     }
 
 } 

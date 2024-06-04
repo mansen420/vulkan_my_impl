@@ -1,5 +1,6 @@
 #include "volk.h"
-#include "GLFW/glfw3.h" //for surface
+#include "GLFW/glfw3.h" 
+#include "glm/glm.hpp"
 
 #include "vulkan_handle.h"
 #include "vulkan_handle_make_shared.h"
@@ -16,10 +17,7 @@ typedef unsigned int uint; //MSVC can't handle the power of pure uint
 //this module handles all communication with vulkan
 
 
-            /***********************************helper interface***********************************/ 
-
-
-
+            /***************************************GLOBALS***************************************/
 
 vk_handle::instance* VULKAN;
 
@@ -45,8 +43,6 @@ private:
     std::vector<std::function<void()>> queue;
 };
     
-            /***************************************GLOBALS***************************************/
-
 destruction_queue TERMINATION_QUEUE;
 
 static bool INIT = false;
@@ -54,12 +50,6 @@ static bool INIT = false;
 namespace vk   = vk_handle;
 namespace get  = vk_handle::data_getters;
 namespace data = vk_handle::description;
-
-        /***************************************PROCEDURES***************************************/
-
-//TODO listen bud, you can do this. You're gonna run down every function in this file, and I mean EVERY FUNCTION, and 
-//factor out whatever you can. 'k, bud?
-//Also, definitely use Vulkan.hpp next time...
 
 //Note :  on Unified devices (integrated GPU) you can and should simply access GPU memory directly, since all device-local
 //memory is host-visible. Thus, staging is not necessary.
@@ -644,9 +634,26 @@ private:
         return true;
     }
 };
+//TODO frame should know hot to render itself. Perhaps add an interface to influence its graphics pipeline,
+//but it should have ownership of a little renderpass and command buffers that render it. 
+//In addition with the frame sending its own command buffer to the render function, this would eliminate the need for explicit synchronization.
+
+
+
+struct vertex
+{
+    glm::vec2   pos;
+    glm::vec3 color;
+};
+const std::vector<vertex> TRIANGLE_VERTICES
+{
+    {{ 0.0f, -0.5f}, {1.f, 0.f, 0.f}},
+    {{ 0.5f,  0.5f}, {0.f, 1.f, 0.f}},
+    {{-0.5f,  0.5f}, {0.f, 0.f, 1.f}}
+};
+
 
 //remember, this is a thin vulkan abstraction :>
-
 int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 {
     vulkan_context context;
@@ -658,13 +665,22 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
     constexpr uint FRAMES_IN_FLIGHT = 2;
 
     frame my_frame(150, 150, "title", FRAMES_IN_FLIGHT, device);
-
+    
     render_data_t render_data(*device, my_frame.get_renderpass(), FRAMES_IN_FLIGHT);
+
+    data::buffer_desc vtx_description{};
+    {
+        vtx_description.parent = *device;
+        vtx_description.queue_fam_indices.push_back(device->description.graphics_queue.fam_idx);
+        vtx_description.usage  = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        vtx_description.size   = sizeof(vertex) * TRIANGLE_VERTICES.size();
+    }
+    vk::buffer vertex_buffer(vtx_description);
 
     while(!glfwWindowShouldClose(my_frame.get_window_handle()))
     {
         glfwPollEvents();
-        my_frame.draw_frames(render_triangles, render_data);
+        my_frame.draw_frames(render_triangles, render_data);       
     }
     vkDeviceWaitIdle(*device);
     return 0;
